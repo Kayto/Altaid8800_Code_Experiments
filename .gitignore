@@ -1,0 +1,17 @@
+FIRMWARE/
+CPM/
+RAMDISK_BACKUP/
+
+# Ignore compiled programs
+Programs/COM/
+
+
+# Python cache
+__pycache__/
+
+# Archive files
+*.7z
+
+# Local assembler path overrides (not published)
+compile_local.py
+DEV_README.md

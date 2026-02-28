@@ -1,0 +1,471 @@
+                        ; =============================================================
+                        ; COLLATZ.ASM - Collatz Conjecture Explorer
+                        ; =============================================================
+                        ; Monitor program for Altaid 8800 -- load at 8000H via ':'
+                        ;
+                        ; The Collatz conjecture (the 3N+1 problem):
+                        ;   Given any positive integer N,
+                        ;     if N is even  ->  N / 2
+                        ;     if N is odd   ->  3N + 1
+                        ;   Repeat.  The conjecture states that no matter what N you
+                        ;   start with, the sequence always reaches 1.  No counter-
+                        ;   example has ever been found, yet it remains unproven.
+                        ;
+                        ; This program tests consecutive integers starting from 2.
+                        ; Each step of the journey is displayed on the front panel:
+                        ;
+                        ;   Address LEDs (A0-A15) : current value in binary
+                        ;   Data LEDs (D0-D7)     : step count (wraps at 256)
+                        ;   Status LEDs           :
+                        ;       S3+S1 lit = odd step  (3N+1 -- value grows)
+                        ;       S2+S0 lit = even step (N/2  -- value shrinks)
+                        ;       all four  = goal reached (N = 1)
+                        ;
+                        ; Arithmetic is 24-bit internally so intermediate values
+                        ; that exceed 65535 during the 3N+1 multiply are handled.
+                        ;
+                        ; When a number reaches 1 the LEDs flash in celebration,
+                        ; then the next starting number is loaded automatically.
+                        ;
+                        ; Press any key to exit back to the monitor.
+                        ; B=90 (step loop) — number of refresh cycles per step, controls speed
+                        ; D=120 — inner pause per refresh, controls brightness (keep ≥60)
+                        ; C=3 — celebration flash count
+                        ; B=50/50 — flash on/off duration
+                        ; B=100 — final state hold before advancing
+                        ;
+                        ; =============================================================
+
+8000                            ORG     8000H
+
+                        ; --- ROM entry points ---
+      = 0BAF            PRINTI  EQU     0BAFH
+      = 0BDE            GETCHAR EQU     0BDEH
+      = 0BF6            PUT_CHAR EQU    0BF6H
+      = 015B            MAINMNU EQU     015BH
+
+                        ; --- UART RX buffer pointers ---
+      = FF2E            RXBHEAD EQU     0FF2EH
+      = FF30            RXBTAIL EQU     0FF30H
+
+                        ; --- Timer ---
+      = FF45            TMRVAL  EQU     0FF45H
+
+                        ; =============================================================
+8000                    START:
+8000  AF                        XRA     A
+8001  D3 46                     OUT     46H             ; stop hardware timer
+
+8003  CD AF0B                   CALL    PRINTI
+8006  0D0A                      DB      0DH, 0AH
+8008  434F4C4C 41545A20         DB      'COLLATZ - Conjecture Explorer'
+8010  2D20436F 6E6A6563
+8018  74757265 20457870
+8020  6C6F7265 72
+8025  0D0A                      DB      0DH, 0AH
+8027  4553433D 65786974         DB      'ESC=exit'
+802F  0D0A00                    DB      0DH, 0AH, 0
+
+8032  21 0200                   LXI     H, 2            ; first number to test
+8035  22 5C82                   SHLD    STARTNO
+
+                        ; -------------------------------------------------------------
+                        ; Begin testing a new starting number
+                        ; -------------------------------------------------------------
+8038                    NEWNUM:
+8038  2A 5C82                   LHLD    STARTNO
+803B  22 5682                   SHLD    CURVAL
+803E  AF                        XRA     A
+803F  32 5882                   STA     CURVAL+2        ; 24-bit high byte = 0
+8042  32 5E82                   STA     STEPCNT
+8045  32 5F82                   STA     STEPCNT+1       ; 16-bit step counter
+8048  32 6082                   STA     SFLAGS          ; neutral status
+
+                                ; Serial: "N=<number>: "
+804B  CD AF0B                   CALL    PRINTI
+804E  4E3D00                    DB      'N=', 0
+8051  2A 5C82                   LHLD    STARTNO
+8054  CD 0F82                   CALL    PRDEC
+8057  CD AF0B                   CALL    PRINTI
+805A  3A2000                    DB      ': ', 0
+
+                        ; -------------------------------------------------------------
+                        ; Main iteration loop
+                        ; -------------------------------------------------------------
+805D                    STEP:
+805D  CD FE81                   CALL    KEYCHK
+8060  CA 6B80                   JZ      NOKEY1
+8063  CD DE0B                   CALL    GETCHAR
+8066  FE 1B                     CPI     1BH
+8068  CA 6381                   JZ      EXIT
+806B                    NOKEY1:
+
+806B  CD 7881                   CALL    SHOWLED
+
+                                ; --- Is current value = 1? ---
+806E  3A 5882                   LDA     CURVAL+2
+8071  B7                        ORA     A
+8072  C2 8380                   JNZ     NOTONE          ; high byte > 0, not 1
+8075  2A 5682                   LHLD    CURVAL
+8078  7C                        MOV     A, H
+8079  B7                        ORA     A
+807A  C2 8380                   JNZ     NOTONE          ; mid byte > 0, not 1
+807D  7D                        MOV     A, L
+807E  FE 01                     CPI     1
+8080  CA 1281                   JZ      GOAL
+
+8083                    NOTONE:
+                                ; Odd or even? (test bit 0)
+8083  3A 5682                   LDA     CURVAL
+8086  1F                        RAR
+8087  DA A580                   JC      DOODD
+
+                        ; --- EVEN: value = value / 2 (24-bit shift right) ---
+808A                    DOEVEN:
+808A  3A 5882                   LDA     CURVAL+2
+808D  B7                        ORA     A               ; clear carry
+808E  1F                        RAR
+808F  32 5882                   STA     CURVAL+2
+8092  3A 5782                   LDA     CURVAL+1
+8095  1F                        RAR                     ; carry chains through
+8096  32 5782                   STA     CURVAL+1
+8099  3A 5682                   LDA     CURVAL
+809C  1F                        RAR
+809D  32 5682                   STA     CURVAL
+
+80A0  3E 05                     MVI     A, 05H          ; status: even (S2+S0)
+80A2  C3 EA80                   JMP     STEPDN
+
+                        ; --- ODD: value = 3 * value + 1 ---
+80A5                    DOODD:
+                                ; Save original value
+80A5  2A 5682                   LHLD    CURVAL
+80A8  22 5982                   SHLD    SAVVAL
+80AB  3A 5882                   LDA     CURVAL+2
+80AE  32 5B82                   STA     SAVVAL+2
+
+                                ; Multiply by 2 (24-bit shift left)
+80B1  2A 5682                   LHLD    CURVAL
+80B4  29                        DAD     H               ; HL *= 2, carry out
+80B5  22 5682                   SHLD    CURVAL
+80B8  3A 5882                   LDA     CURVAL+2
+80BB  17                        RAL                     ; rotate carry in
+80BC  32 5882                   STA     CURVAL+2
+
+                                ; Add original to get 3x
+80BF  2A 5682                   LHLD    CURVAL          ; 2x (low 16)
+80C2  EB                        XCHG                    ; DE = 2x
+80C3  2A 5982                   LHLD    SAVVAL          ; HL = original (low 16)
+80C6  19                        DAD     D               ; HL = 3x low 16, carry
+80C7  22 5682                   SHLD    CURVAL
+80CA  3A 5882                   LDA     CURVAL+2        ; 2x high byte
+80CD  47                        MOV     B, A
+80CE  3A 5B82                   LDA     SAVVAL+2        ; original high byte
+80D1  88                        ADC     B               ; 3x high = 2x_hi + orig_hi + carry
+80D2  32 5882                   STA     CURVAL+2
+
+                                ; Plus 1 to complete 3N+1
+80D5  2A 5682                   LHLD    CURVAL
+80D8  23                        INX     H
+80D9  22 5682                   SHLD    CURVAL
+80DC  7C                        MOV     A, H
+80DD  B5                        ORA     L               ; zero only if FFFF wrapped to 0000
+80DE  C2 E880                   JNZ     NOINC
+80E1  3A 5882                   LDA     CURVAL+2
+80E4  3C                        INR     A
+80E5  32 5882                   STA     CURVAL+2
+80E8                    NOINC:
+80E8  3E 0A                     MVI     A, 0AH          ; status: odd (S3+S1)
+
+                        ; --- Common tail for both branches ---
+80EA                    STEPDN:
+80EA  32 6082                   STA     SFLAGS
+
+80ED  3A 5E82                   LDA     STEPCNT
+80F0  3C                        INR     A
+80F1  32 5E82                   STA     STEPCNT
+80F4  C2 FE80                   JNZ     NOINC2
+80F7  3A 5F82                   LDA     STEPCNT+1
+80FA  3C                        INR     A
+80FB  32 5F82                   STA     STEPCNT+1
+80FE                    NOINC2:
+
+                                ; Active refresh loop -- keeps LEDs bright
+                                ; TIMING: B*D sets step duration. Increase B to slow
+                                ; down, decrease to speed up. D controls brightness --
+                                ; keep above ~60 to avoid visible flicker.
+80FE  06 5A                     MVI     B, 90           ; refresh iterations  (speed)
+8100  16 78                     MVI     D, 120          ; inner pause per refresh (brightness)
+8102                    REFRSH:
+8102  CD 7881                   CALL    SHOWLED
+8105  D5                        PUSH    D               ; restore D each pass
+8106                    RPAUSE:
+8106  15                        DCR     D
+8107  C2 0681                   JNZ     RPAUSE
+810A  D1                        POP     D
+810B  05                        DCR     B
+810C  C2 0281                   JNZ     REFRSH
+
+810F  C3 5D80                   JMP     STEP
+
+                        ; -------------------------------------------------------------
+                        ; Goal reached -- value = 1
+                        ; -------------------------------------------------------------
+8112                    GOAL:
+8112  3E 0F                     MVI     A, 0FH
+8114  32 6082                   STA     SFLAGS
+8117  CD 7881                   CALL    SHOWLED
+
+                                ; Serial: "<steps>\r\n"
+811A  2A 5E82                   LHLD    STEPCNT
+811D  CD 0F82                   CALL    PRDEC
+8120  CD AF0B                   CALL    PRINTI
+8123  0D0A00                    DB      0DH, 0AH, 0
+
+                                ; Celebration flash (active refresh)
+                                ; TIMING: C = flash count, B = on/off duration
+8126  0E 03                     MVI     C, 3            ; number of flashes
+8128                    GFLASH:
+8128  06 64                     MVI     B, 100           ; on duration
+812A                    GFON:
+812A  CD C481                   CALL    ALLON
+812D  16 50                     MVI     D, 80
+812F                    GFONP:
+812F  15                        DCR     D
+8130  C2 2F81                   JNZ     GFONP
+8133  05                        DCR     B
+8134  C2 2A81                   JNZ     GFON
+8137  06 64                     MVI     B, 100           ; off duration
+8139                    GFOFF:
+8139  CD E181                   CALL    ALLOFF
+813C  16 50                     MVI     D, 80
+813E                    GFOFP:
+813E  15                        DCR     D
+813F  C2 3E81                   JNZ     GFOFP
+8142  05                        DCR     B
+8143  C2 3981                   JNZ     GFOFF
+8146  0D                        DCR     C
+8147  C2 2881                   JNZ     GFLASH
+
+                                ; Show final state briefly (active refresh)
+                                ; TIMING: B = hold duration before advancing
+814A  06 C8                     MVI     B, 200          ; hold duration
+814C                    GFHOLD:
+814C  CD 7881                   CALL    SHOWLED
+814F  16 50                     MVI     D, 80
+8151                    GFHLP:
+8151  15                        DCR     D
+8152  C2 5181                   JNZ     GFHLP
+8155  05                        DCR     B
+8156  C2 4C81                   JNZ     GFHOLD
+
+                                ; Advance to next starting number
+8159  2A 5C82                   LHLD    STARTNO
+815C  23                        INX     H
+815D  22 5C82                   SHLD    STARTNO
+8160  C3 3880                   JMP     NEWNUM
+
+                        ; -------------------------------------------------------------
+                        ; Exit to monitor
+                        ; -------------------------------------------------------------
+8163                    EXIT:
+8163  3A 45FF                   LDA     TMRVAL
+8166  D3 46                     OUT     46H             ; restore timer ISR
+8168  CD AF0B                   CALL    PRINTI
+816B  0D0A                      DB      0DH, 0AH
+816D  446F6E65 2E               DB      'Done.'
+8172  0D0A00                    DB      0DH, 0AH, 0
+8175  C3 5B01                   JMP     MAINMNU
+
+                        ; =============================================================
+                        ; SHOWLED - Write current state to all 7 LED columns
+                        ; =============================================================
+8178                    SHOWLED:
+                                ; Col 2 (A0-A3): value bits 3:0
+8178  3A 5682                   LDA     CURVAL
+817B  E6 0F                     ANI     0FH
+817D  F6 A0                     ORI     0A0H
+817F  D3 C0                     OUT     0C0H
+
+                                ; Col 3 (A4-A7): value bits 7:4
+8181  3A 5682                   LDA     CURVAL
+8184  0F                        RRC
+8185  0F                        RRC
+8186  0F                        RRC
+8187  0F                        RRC
+8188  E6 0F                     ANI     0FH
+818A  F6 B0                     ORI     0B0H
+818C  D3 C0                     OUT     0C0H
+
+                                ; Col 0 (A8-A11): value bits 11:8
+818E  3A 5782                   LDA     CURVAL+1
+8191  E6 0F                     ANI     0FH
+8193  F6 80                     ORI     80H
+8195  D3 C0                     OUT     0C0H
+
+                                ; Col 1 (A12-A15): value bits 15:12
+8197  3A 5782                   LDA     CURVAL+1
+819A  0F                        RRC
+819B  0F                        RRC
+819C  0F                        RRC
+819D  0F                        RRC
+819E  E6 0F                     ANI     0FH
+81A0  F6 90                     ORI     90H
+81A2  D3 C0                     OUT     0C0H
+
+                                ; Col 4 (D0-D3): step count bits 3:0
+81A4  3A 5E82                   LDA     STEPCNT
+81A7  E6 0F                     ANI     0FH
+81A9  F6 C0                     ORI     0C0H
+81AB  D3 C0                     OUT     0C0H
+
+                                ; Col 5 (D4-D7): step count bits 7:4
+81AD  3A 5E82                   LDA     STEPCNT
+81B0  0F                        RRC
+81B1  0F                        RRC
+81B2  0F                        RRC
+81B3  0F                        RRC
+81B4  E6 0F                     ANI     0FH
+81B6  F6 D0                     ORI     0D0H
+81B8  D3 C0                     OUT     0C0H
+
+                                ; Col 6 (Status): operation indicator
+81BA  3A 6082                   LDA     SFLAGS
+81BD  E6 0F                     ANI     0FH
+81BF  F6 E0                     ORI     0E0H
+81C1  D3 C0                     OUT     0C0H
+
+81C3  C9                        RET
+
+                        ; =============================================================
+                        ; ALLON - All 28 LEDs on
+                        ; =============================================================
+81C4                    ALLON:
+81C4  3E 8F                     MVI     A, 8FH
+81C6  D3 C0                     OUT     0C0H
+81C8  3E 9F                     MVI     A, 9FH
+81CA  D3 C0                     OUT     0C0H
+81CC  3E AF                     MVI     A, 0AFH
+81CE  D3 C0                     OUT     0C0H
+81D0  3E BF                     MVI     A, 0BFH
+81D2  D3 C0                     OUT     0C0H
+81D4  3E CF                     MVI     A, 0CFH
+81D6  D3 C0                     OUT     0C0H
+81D8  3E DF                     MVI     A, 0DFH
+81DA  D3 C0                     OUT     0C0H
+81DC  3E EF                     MVI     A, 0EFH
+81DE  D3 C0                     OUT     0C0H
+81E0  C9                        RET
+
+                        ; =============================================================
+                        ; ALLOFF - All 28 LEDs off
+                        ; =============================================================
+81E1                    ALLOFF:
+81E1  3E 80                     MVI     A, 80H
+81E3  D3 C0                     OUT     0C0H
+81E5  3E 90                     MVI     A, 90H
+81E7  D3 C0                     OUT     0C0H
+81E9  3E A0                     MVI     A, 0A0H
+81EB  D3 C0                     OUT     0C0H
+81ED  3E B0                     MVI     A, 0B0H
+81EF  D3 C0                     OUT     0C0H
+81F1  3E C0                     MVI     A, 0C0H
+81F3  D3 C0                     OUT     0C0H
+81F5  3E D0                     MVI     A, 0D0H
+81F7  D3 C0                     OUT     0C0H
+81F9  3E E0                     MVI     A, 0E0H
+81FB  D3 C0                     OUT     0C0H
+81FD  C9                        RET
+
+                        ; =============================================================\n; KEYCHK - Test for keypress (Z = none, NZ = key waiting)\n; =============================================================
+81FE                    KEYCHK:
+81FE  E5                        PUSH    H
+81FF  2A 2EFF                   LHLD    RXBHEAD
+8202  EB                        XCHG
+8203  2A 30FF                   LHLD    RXBTAIL
+8206  7C                        MOV     A, H
+8207  BA                        CMP     D
+8208  C2 0D82                   JNZ     GOTKEY
+820B  7D                        MOV     A, L
+820C  BB                        CMP     E
+820D                    GOTKEY:
+820D  E1                        POP     H
+820E  C9                        RET
+
+                        ; =============================================================
+                        ; PRDEC - Print HL as unsigned decimal, suppress leading zeros
+                        ; =============================================================
+820F                    PRDEC:
+820F  C5                        PUSH    B
+8210  D5                        PUSH    D
+8211  06 00                     MVI     B, 0            ; leading zero suppression
+8213  11 1027                   LXI     D, 10000
+8216  CD 3482                   CALL    PDIGIT
+8219  11 E803                   LXI     D, 1000
+821C  CD 3482                   CALL    PDIGIT
+821F  11 6400                   LXI     D, 100
+8222  CD 3482                   CALL    PDIGIT
+8225  11 0A00                   LXI     D, 10
+8228  CD 3482                   CALL    PDIGIT
+822B  7D                        MOV     A, L            ; last digit (ones)
+822C  C6 30                     ADI     '0'
+822E  CD F60B                   CALL    PUT_CHAR
+8231  D1                        POP     D
+8232  C1                        POP     B
+8233  C9                        RET
+
+                        ; PDIGIT - Divide HL by DE, print quotient digit
+8234                    PDIGIT:
+8234  0E 30                     MVI     C, '0'
+8236                    PDLOOP:
+8236  7D                        MOV     A, L
+8237  93                        SUB     E
+8238  6F                        MOV     L, A
+8239  7C                        MOV     A, H
+823A  9A                        SBB     D
+823B  67                        MOV     H, A
+823C  DA 4382                   JC      PDFIX
+823F  0C                        INR     C
+8240  C3 3682                   JMP     PDLOOP
+8243                    PDFIX:
+8243  19                        DAD     D               ; undo last subtract
+8244  79                        MOV     A, C
+8245  FE 30                     CPI     '0'
+8247  C2 4D82                   JNZ     PDPRNT          ; non-zero digit
+824A  78                        MOV     A, B
+824B  B7                        ORA     A
+824C  C8                        RZ                      ; suppress leading zero
+824D                    PDPRNT:
+824D  06 01                     MVI     B, 1            ; disable suppression
+824F  79                        MOV     A, C
+8250  E5                        PUSH    H
+8251  CD F60B                   CALL    PUT_CHAR
+8254  E1                        POP     H
+8255  C9                        RET
+
+                        ; =============================================================
+                        ; Variables
+                        ; =============================================================
+8256   (0003)           CURVAL: DS      3               ; current value (24-bit, LE)
+8259   (0003)           SAVVAL: DS      3               ; temp for 3N+1 multiply
+825C   (0002)           STARTNO: DS     2               ; number under test
+825E   (0002)           STEPCNT: DS     2               ; iteration counter (16-bit)
+8260   (0001)           SFLAGS: DS      1               ; status LED pattern
+
+8261   (8000)                   END     START
+
+ALLOFF             81E1    ALLON              81C4    CURVAL             8256
+DOEVEN             808A    DOODD              80A5    EXIT               8163
+GETCHAR            0BDE E  GFHLP              8151    GFHOLD             814C
+GFLASH             8128    GFOFF              8139    GFOFP              813E
+GFON               812A    GFONP              812F    GOAL               8112
+GOTKEY             820D    KEYCHK             81FE    MAINMNU            015B E
+NEWNUM             8038    NOINC              80E8    NOINC2             80FE
+NOKEY1             806B    NOTONE             8083    PDFIX              8243
+PDIGIT             8234    PDLOOP             8236    PDPRNT             824D
+PRDEC              820F    PRINTI             0BAF E  PUT_CHAR           0BF6 E
+REFRSH             8102    RPAUSE             8106    RXBHEAD            FF2E E
+RXBTAIL            FF30 E  SAVVAL             8259    SFLAGS             8260
+SHOWLED            8178    START              8000    STARTNO            825C
+STEP               805D    STEPCNT            825E    STEPDN             80EA
+TMRVAL             FF45 E

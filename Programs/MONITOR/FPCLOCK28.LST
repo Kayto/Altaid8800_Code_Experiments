@@ -1,0 +1,513 @@
+                                ;=====================================================
+                        ; FPCLOCK28.ASM - 28-LED Tally Clock
+                        ;
+                        ; Monitor program for the Altaid 8800.
+                        ; Load via ':' command, run with 'G 8000'.
+                        ;
+                        ; Uses all 28 front panel LEDs for a human-readable
+                        ; clock that alternates between two screens.
+                        ;
+                        ; HOUR SCREEN (24h format):
+                        ;   All 24 non-status LEDs show a tally bar.
+                        ;   Count the lit LEDs = current hour (0-23).
+                        ;   Fills right-to-left: A0->A15 then D0->D7.
+                        ;
+                        ;   Examples (* = lit, - = off):
+                        ;     Data      Status  Address
+                        ;     --------  ----    ----------------
+                        ;     --------  .H..    --------***----- =  3:xx
+                        ;     --------  .H..    ************---- = 12:xx
+                        ;     *******-  .H..    **************** = 23:xx
+                        ;
+                        ; MINUTE SCREEN:
+                        ;   Address high (A8-A15): each lit LED = 10 minutes
+                        ;   Address low  (A0-A7):  each lit LED =  5 minutes
+                        ;   Data         (D0-D7):  each lit LED =  1 minute
+                        ;
+                        ;   Read: (addr_high x 10) + (addr_low x 5)
+                        ;       + (data x 1) = minutes
+                        ;
+                        ;   Examples for 37 minutes:
+                        ;     Data      Status  Addr_high  Addr_low
+                        ;     **------  ..M.    ***-----   *-------
+                        ;     2 ones           3 tens     1 five
+                        ;     = 30 + 5 + 2 = 37
+                        ;
+                        ; STATUS LEDs (always visible, left to right):
+                        ;   S3: Second tick (blinks each second)
+                        ;   S2: PM indicator (lit = PM)
+                        ;   S1: Lit when showing Hours
+                        ;   S0: Lit when showing Minutes
+                        ;
+                        ; Screens alternate every ~3 sec with brief flash.
+                        ; Press ESC to exit.
+                        ;=====================================================
+
+8000                            ORG     8000H
+
+                        ;------------------------------------------------------
+                        ; System equates
+                        ;------------------------------------------------------
+      = 00C0            OUTPORT EQU     0C0H
+      = 0046            TIMER   EQU     046H
+      = FF45            TIMERV  EQU     0FF45H
+      = FF2E            RXBHEAD EQU     0FF2EH
+      = FF30            RXBTAIL EQU     0FF30H
+      = 0BAF            PRINTI  EQU     0BAFH
+      = 0BDE            GETCHAR EQU     0BDEH
+      = 015B            MAINMNU EQU     015BH
+      = 0007            NUMCOLS EQU     7
+
+                        ;======================================================
+                        ; SETUP - banner and time input (timer still running)
+                        ;======================================================
+8000                    START:
+8000  CD AF0B                   CALL    PRINTI
+8003  0D0A                      DB      0DH, 0AH
+8005  32382D4C 45442054         DB      '28-LED Tally Clock'
+800D  616C6C79 20436C6F
+8015  636B
+8017  0D0A00                    DB      0DH, 0AH, 00H
+
+801A  CD AF0B                   CALL    PRINTI
+801D  486F7572 73202830         DB      'Hours (00-23): ', 00H
+8025  302D3233 293A2000
+802D  CD 3282                   CALL    GETNUM
+8030  32 5782                   STA     HOURS
+
+8033  CD AF0B                   CALL    PRINTI
+8036  0D0A                      DB      0DH, 0AH
+8038  4D696E75 74657320         DB      'Minutes (00-59): ', 00H
+8040  2830302D 3539293A
+8048  2000
+804A  CD 3282                   CALL    GETNUM
+804D  32 5882                   STA     MINUTES
+
+8050  CD AF0B                   CALL    PRINTI
+8053  0D0A                      DB      0DH, 0AH
+8055  52756E6E 696E672E         DB      'Running... ESC=exit', 0DH, 0AH, 00H
+805D  2E2E2045 53433D65
+8065  7869740D 0A00
+
+                                ; Drain UART buffer
+806B  3A 2EFF                   LDA     RXBHEAD
+806E  32 30FF                   STA     RXBTAIL
+
+                                ; Save & stop timer
+8071  3A 45FF                   LDA     TIMERV
+8074  32 5982                   STA     SAVTMR
+8077  AF                        XRA     A
+8078  32 45FF                   STA     TIMERV
+807B  D3 46                     OUT     TIMER
+
+                                ; Init counters
+807D  AF                        XRA     A
+807E  32 5A82                   STA     SECTICK
+8081  32 5B82                   STA     SECCNT
+8084  32 5C82                   STA     DISPMODE
+8087  32 5D82                   STA     MODETICK
+808A  32 5E82                   STA     BLINKTK
+808D  32 5F82                   STA     BLINKST
+8090  32 6082                   STA     FLASHCNT
+
+                        ;======================================================
+                        ; MAIN LOOP
+                        ;======================================================
+8093                    MAINLP:
+8093  3A 5C82                   LDA     DISPMODE
+8096  B7                        ORA     A
+8097  C2 D880                   JNZ     SHOWMIN
+
+                        ;------------------------------------------------------
+                        ; SHOW HOURS - tally bar across 24 LEDs (0-23)
+                        ;   Fills: col2 col3 col0 col1 col4 col5
+                        ;------------------------------------------------------
+809A                    SHOWHR:
+809A  3A 5782                   LDA     HOURS
+809D  47                        MOV     B, A            ; B = hours (0-23)
+
+                                ; full_cols = hours / 4
+809E  0F                        RRC
+809F  0F                        RRC
+80A0  E6 07                     ANI     07H
+80A2  4F                        MOV     C, A            ; C = full columns (0-5)
+
+                                ; partial = hours & 3
+80A3  78                        MOV     A, B
+80A4  E6 03                     ANI     03H
+80A6  57                        MOV     D, A            ; D = partial bits (0-3)
+
+80A7  1E 00                     MVI     E, 0            ; E = column index
+
+80A9                    HRLOOP:
+80A9  7B                        MOV     A, E
+80AA  B9                        CMP     C               ; index vs full_cols
+80AB  DA B580                   JC      HRFULL          ; index < full: all 4 on
+80AE  C2 BA80                   JNZ     HREMPTY         ; index > full: all off
+
+                                ; index == full: partial fill
+80B1  7A                        MOV     A, D
+80B2  C3 BB80                   JMP     HRSET
+
+80B5                    HRFULL:
+80B5  3E 04                     MVI     A, 4            ; TALLYTBL[4] = 0FH
+80B7  C3 BB80                   JMP     HRSET
+
+80BA                    HREMPTY:
+80BA  AF                        XRA     A               ; TALLYTBL[0] = 00H
+
+80BB                    HRSET:
+                                ; A = 0-4 -> look up tally pattern
+80BB  21 6982                   LXI     H, TALLYTBL
+80BE  85                        ADD     L
+80BF  6F                        MOV     L, A
+80C0  46                        MOV     B, M            ; B = LED pattern
+
+                                ; Get physical column from HRORDER
+80C1  21 6E82                   LXI     H, HRORDER
+80C4  7B                        MOV     A, E
+80C5  85                        ADD     L
+80C6  6F                        MOV     L, A
+80C7  7E                        MOV     A, M            ; A = physical column
+
+                                ; COLDATA[phys_col] = B
+80C8  21 6282                   LXI     H, COLDATA
+80CB  85                        ADD     L
+80CC  6F                        MOV     L, A
+80CD  70                        MOV     M, B
+
+                                ; Restore C = full_cols (B was clobbered)
+                                ; C and D are preserved through this loop
+80CE  1C                        INR     E
+80CF  7B                        MOV     A, E
+80D0  FE 06                     CPI     6
+80D2  C2 A980                   JNZ     HRLOOP
+
+80D5  C3 2381                   JMP     SETSTAT
+
+                        ;------------------------------------------------------
+                        ; SHOW MINUTES - tens / fives / ones tally groups
+                        ;------------------------------------------------------
+80D8                    SHOWMIN:
+80D8  3A 5882                   LDA     MINUTES
+80DB  CD 4982                   CALL    DIV10           ; B = tens, A = remainder
+
+80DE  57                        MOV     D, A            ; D = remainder (0-9)
+
+                                ; Tens -> addr high (cols 0, 1)
+80DF  78                        MOV     A, B
+80E0  FE 05                     CPI     5
+80E2  DA F280                   JC      TNS_LO
+
+                                ; tens = 5: col0 = 0F, col1 = 01
+80E5  3E 0F                     MVI     A, 0FH
+80E7  32 6282                   STA     COLDATA+0
+80EA  3E 01                     MVI     A, 01H
+80EC  32 6382                   STA     COLDATA+1
+80EF  C3 FF80                   JMP     TNS_DONE
+
+80F2                    TNS_LO:
+                                ; tens 0-4: col0 = TALLYTBL[tens]
+80F2  21 6982                   LXI     H, TALLYTBL
+80F5  85                        ADD     L
+80F6  6F                        MOV     L, A
+80F7  7E                        MOV     A, M
+80F8  32 6282                   STA     COLDATA+0
+80FB  AF                        XRA     A
+80FC  32 6382                   STA     COLDATA+1
+
+80FF                    TNS_DONE:
+                                ; Fives and ones from remainder D
+80FF  7A                        MOV     A, D
+8100  FE 05                     CPI     5
+8102  DA 0D81                   JC      FIV_0
+
+                                ; fives = 1, ones = D - 5
+8105  D6 05                     SUI     5
+8107  57                        MOV     D, A            ; D = ones (0-4)
+8108  3E 01                     MVI     A, 01H
+810A  C3 0E81                   JMP     FIV_SET
+
+810D                    FIV_0:
+                                ; fives = 0, ones = D (0-4)
+810D  AF                        XRA     A
+
+810E                    FIV_SET:
+810E  32 6482                   STA     COLDATA+2       ; col 2 (A0-A3)
+8111  AF                        XRA     A
+8112  32 6582                   STA     COLDATA+3       ; col 3 (A4-A7)
+
+                                ; Ones -> data (col 4)
+8115  21 6982                   LXI     H, TALLYTBL
+8118  7A                        MOV     A, D
+8119  85                        ADD     L
+811A  6F                        MOV     L, A
+811B  7E                        MOV     A, M
+811C  32 6682                   STA     COLDATA+4
+811F  AF                        XRA     A
+8120  32 6782                   STA     COLDATA+5
+
+                        ;------------------------------------------------------
+                        ; STATUS LEDs (col 6, always computed)
+                        ;   S3 (bit 3) = second tick blink
+                        ;   S2 (bit 2) = PM
+                        ;   S1 (bit 1) = hours mode
+                        ;   S0 (bit 0) = minutes mode
+                        ;------------------------------------------------------
+8123                    SETSTAT:
+                                ; S3: blink
+8123  3A 5F82                   LDA     BLINKST
+8126  B7                        ORA     A
+8127  3E 00                     MVI     A, 0
+8129  CA 2E81                   JZ      S_NOBLNK
+812C  3E 08                     MVI     A, 08H
+812E                    S_NOBLNK:
+
+                                ; S2: PM (hours >= 12)
+812E  47                        MOV     B, A
+812F  3A 5782                   LDA     HOURS
+8132  FE 0C                     CPI     12
+8134  78                        MOV     A, B
+8135  DA 3A81                   JC      S_NOPM
+8138  F6 04                     ORI     04H
+813A                    S_NOPM:
+
+                                ; S1/S0: mode indicator
+813A  47                        MOV     B, A
+813B  3A 5C82                   LDA     DISPMODE
+813E  B7                        ORA     A
+813F  78                        MOV     A, B
+8140  C2 4881                   JNZ     S_ISMIN
+8143  F6 02                     ORI     02H             ; bit 1 = hours
+8145  C3 4A81                   JMP     S_SAVE
+8148                    S_ISMIN:
+8148  F6 01                     ORI     01H             ; bit 0 = minutes
+814A                    S_SAVE:
+814A  32 6882                   STA     COLDATA+6
+
+                        ;------------------------------------------------------
+                        ; Flash overlay on mode change
+                        ;------------------------------------------------------
+814D  3A 6082                   LDA     FLASHCNT
+8150  B7                        ORA     A
+8151  CA 6C81                   JZ      DOSCAN
+8154  3D                        DCR     A
+8155  32 6082                   STA     FLASHCNT
+8158  3E 0F                     MVI     A, 0FH
+815A  32 6282                   STA     COLDATA+0
+815D  32 6382                   STA     COLDATA+1
+8160  32 6482                   STA     COLDATA+2
+8163  32 6582                   STA     COLDATA+3
+8166  32 6682                   STA     COLDATA+4
+8169  32 6782                   STA     COLDATA+5
+
+                        ;======================================================
+                        ; SCAN - multiplex all 7 columns for POV
+                        ;======================================================
+816C                    DOSCAN:
+816C  16 10                     MVI     D, 10H          ; 16 scan cycles
+
+816E                    SCANLP:
+816E  21 6282                   LXI     H, COLDATA
+8171  1E 80                     MVI     E, 80H          ; col 0 prefix
+8173  06 07                     MVI     B, NUMCOLS
+
+8175                    SCNCOL:
+8175  7E                        MOV     A, M
+8176  B3                        ORA     E               ; merge prefix + TX idle
+8177  D3 C0                     OUT     OUTPORT
+
+8179  0E 82                     MVI     C, 82H          ; 130-iteration delay (cal)
+817B  0D                COLDLY: DCR     C
+817C  C2 7B81                   JNZ     COLDLY
+
+817F  23                        INX     H
+8180  7B                        MOV     A, E
+8181  C6 10                     ADI     10H
+8183  5F                        MOV     E, A
+
+8184  05                        DCR     B
+8185  C2 7581                   JNZ     SCNCOL
+
+8188  15                        DCR     D
+8189  C2 6E81                   JNZ     SCANLP
+
+                                ;--- Timekeeping ---
+818C  3A 5A82                   LDA     SECTICK
+818F  3C                        INR     A
+8190  32 5A82                   STA     SECTICK
+8193  FE 09                     CPI     09H             ; 9 ticks ~ 1 second
+8195  C2 CC81                   JNZ     NOSEC
+
+8198  AF                        XRA     A
+8199  32 5A82                   STA     SECTICK
+819C  3A 5B82                   LDA     SECCNT
+819F  3C                        INR     A
+81A0  32 5B82                   STA     SECCNT
+81A3  FE 3C                     CPI     3CH             ; 60 seconds
+81A5  C2 CC81                   JNZ     NOSEC
+
+81A8  AF                        XRA     A
+81A9  32 5B82                   STA     SECCNT
+81AC  3A 5882                   LDA     MINUTES
+81AF  3C                        INR     A
+81B0  32 5882                   STA     MINUTES
+81B3  FE 3C                     CPI     3CH             ; 60 minutes
+81B5  C2 CC81                   JNZ     NOSEC
+
+81B8  AF                        XRA     A
+81B9  32 5882                   STA     MINUTES
+81BC  3A 5782                   LDA     HOURS
+81BF  3C                        INR     A
+81C0  32 5782                   STA     HOURS
+81C3  FE 18                     CPI     18H             ; 24 hours
+81C5  C2 CC81                   JNZ     NOSEC
+
+81C8  AF                        XRA     A
+81C9  32 5782                   STA     HOURS
+
+81CC                    NOSEC:
+                                ;--- Blink timer ---
+81CC  3A 5E82                   LDA     BLINKTK
+81CF  3C                        INR     A
+81D0  32 5E82                   STA     BLINKTK
+81D3  FE 05                     CPI     05H             ; 5 ticks ~ 0.5 sec
+81D5  C2 E481                   JNZ     NOBLNK
+
+81D8  AF                        XRA     A
+81D9  32 5E82                   STA     BLINKTK
+81DC  3A 5F82                   LDA     BLINKST
+81DF  EE 01                     XRI     01H
+81E1  32 5F82                   STA     BLINKST
+
+81E4                    NOBLNK:
+                                ;--- Mode timer ---
+81E4  3A 5D82                   LDA     MODETICK
+81E7  3C                        INR     A
+81E8  32 5D82                   STA     MODETICK
+81EB  FE 1B                     CPI     1BH             ; 27 ticks ~ 3 sec
+81ED  C2 0182                   JNZ     NOMODE
+
+81F0  AF                        XRA     A
+81F1  32 5D82                   STA     MODETICK
+81F4  3A 5C82                   LDA     DISPMODE
+81F7  EE 01                     XRI     01H
+81F9  32 5C82                   STA     DISPMODE
+81FC  3E 03                     MVI     A, 3
+81FE  32 6082                   STA     FLASHCNT        ; trigger flash
+
+8201                    NOMODE:
+                                ;--- Check UART for keypress ---
+8201  3A 2EFF                   LDA     RXBHEAD
+8204  21 30FF                   LXI     H, RXBTAIL
+8207  96                        SUB     M
+8208  CA 9380                   JZ      MAINLP
+
+                                ; Read key - only ESC exits
+820B  CD DE0B                   CALL    GETCHAR
+820E  FE 1B                     CPI     1BH
+8210  C2 9380                   JNZ     MAINLP
+
+                                ;=== EXIT ===
+
+                                ; Blank all LED columns
+8213  3E 80                     MVI     A, 80H
+8215  D3 C0             BLNKLP: OUT     OUTPORT
+8217  C6 10                     ADI     10H
+8219  D2 1582                   JNC     BLNKLP
+
+                                ; Restore timer
+821C  3A 5982                   LDA     SAVTMR
+821F  32 45FF                   STA     TIMERV
+8222  D3 46                     OUT     TIMER
+
+8224  CD AF0B                   CALL    PRINTI
+8227  446F6E65 2E0D0A00         DB      'Done.', 0DH, 0AH, 00H
+
+822F  C3 5B01                   JMP     MAINMNU
+
+                        ;======================================================
+                        ; GETNUM - Read 2 ASCII digits, return binary in A
+                        ;   tens*10 + ones, using ROM GET_CHAR (echoed)
+                        ;======================================================
+8232                    GETNUM:
+8232  CD DE0B                   CALL    GETCHAR         ; read tens digit
+8235  D6 30                     SUI     30H
+8237  47                        MOV     B, A
+8238  87                        ADD     A               ; x2
+8239  87                        ADD     A               ; x4
+823A  80                        ADD     B               ; x5
+823B  87                        ADD     A               ; x10
+823C  32 6182                   STA     TEMP
+823F  CD DE0B                   CALL    GETCHAR         ; read ones digit
+8242  D6 30                     SUI     30H
+8244  21 6182                   LXI     H, TEMP
+8247  86                        ADD     M               ; tens*10 + ones
+8248  C9                        RET
+
+                        ;======================================================
+                        ; DIV10 - Divide A by 10
+                        ;   Returns: B = quotient, A = remainder
+                        ;======================================================
+8249                    DIV10:
+8249  06 00                     MVI     B, 0
+824B                    DIV10L:
+824B  FE 0A                     CPI     10
+824D  DA 5682                   JC      DIV10D
+8250  D6 0A                     SUI     10
+8252  04                        INR     B
+8253  C3 4B82                   JMP     DIV10L
+8256                    DIV10D:
+8256  C9                        RET
+
+                        ;------------------------------------------------------
+                        ; Variables
+                        ;------------------------------------------------------
+8257  00                HOURS:   DB     00H
+8258  00                MINUTES: DB     00H
+8259  00                SAVTMR:  DB     00H
+825A  00                SECTICK: DB     00H
+825B  00                SECCNT:  DB     00H
+825C  00                DISPMODE:DB     00H
+825D  00                MODETICK:DB     00H
+825E  00                BLINKTK: DB     00H
+825F  00                BLINKST: DB     00H
+8260  00                FLASHCNT:DB     00H
+8261  00                TEMP:    DB     00H
+
+                        ; Column data bytes (indexed 0-6 = columns 0-6)
+8262                    COLDATA:
+8262  00000000 000000           DB      00H, 00H, 00H, 00H, 00H, 00H, 00H
+
+                        ; Tally fill patterns: count -> LED pattern
+8269                    TALLYTBL:
+8269  00                        DB      00H             ; 0 LEDs
+826A  01                        DB      01H             ; 1 LED
+826B  03                        DB      03H             ; 2 LEDs
+826C  07                        DB      07H             ; 3 LEDs
+826D  0F                        DB      0FH             ; 4 LEDs
+
+                        ; Hour display column order (right-to-left on panel)
+                        ;   A0-A3(col2), A4-A7(col3), A8-A11(col0),
+                        ;   A12-A15(col1), D0-D3(col4), D4-D7(col5)
+826E                    HRORDER:
+826E  02030001 0405             DB      02H, 03H, 00H, 01H, 04H, 05H
+
+BLINKST            825F    BLINKTK            825E    BLNKLP             8215
+COLDATA            8262    COLDLY             817B    DISPMODE           825C
+DIV10              8249    DIV10D             8256    DIV10L             824B
+DOSCAN             816C    FIV_0              810D    FIV_SET            810E
+FLASHCNT           8260    GETCHAR            0BDE E  GETNUM             8232
+HOURS              8257    HREMPTY            80BA    HRFULL             80B5
+HRLOOP             80A9    HRORDER            826E    HRSET              80BB
+MAINLP             8093    MAINMNU            015B E  MINUTES            8258
+MODETICK           825D    NOBLNK             81E4    NOMODE             8201
+NOSEC              81CC    NUMCOLS            0007 E  OUTPORT            00C0 E
+PRINTI             0BAF E  RXBHEAD            FF2E E  RXBTAIL            FF30 E
+SAVTMR             8259    SCANLP             816E    SCNCOL             8175
+SECCNT             825B    SECTICK            825A    SETSTAT            8123
+SHOWHR             809A    SHOWMIN            80D8    START              8000
+S_ISMIN            8148    S_NOBLNK           812E    S_NOPM             813A
+S_SAVE             814A    TALLYTBL           8269    TEMP               8261
+TIMER              0046 E  TIMERV             FF45 E  TNS_DONE           80FF
+TNS_LO             80F2

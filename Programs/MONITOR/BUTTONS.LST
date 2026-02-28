@@ -1,0 +1,386 @@
+                        ;=====================================================
+                        ; BUTTONS.ASM - Front Panel Button Test
+                        ;
+                        ; Monitor program for the Altaid 8800.
+                        ; Load via the : (Intel HEX) command, run with G 8000.
+                        ;
+                        ; Tests all 11 software-readable buttons:
+                        ;   D0-D7  = 8 Data Momentary Switches
+                        ;   RUN    = Run control switch
+                        ;   MODE   = Mode control switch
+                        ;   NEXT   = Next control switch
+                        ;   (RESET is hardwired, not software-readable)
+                        ;
+                        ; When buttons are pressed the corresponding LEDs
+                        ; light up and the state is printed on the serial
+                        ; terminal.  Data switches D0-D7 echo on Data LEDs.
+                        ; Control switches echo on Status LEDs:
+                        ;   RUN  -> S0 (rightmost)
+                        ;   MODE -> S1
+                        ;   NEXT -> S2
+                        ;
+                        ; The switch input port (40H) is multiplexed through
+                        ; the same column-select mechanism as the LED output.
+                        ; Write a column-select value to port C0H, then
+                        ; immediately read port 40H to sample that column's
+                        ; switches.  Active-low: bit=0 means pressed.
+                        ;
+                        ;   Column 4 (C0H) -> IN 40H bits 3:0 = D0-D3
+                        ;   Column 5 (D0H) -> IN 40H bits 3:0 = D4-D7
+                        ;   Column 6 (E0H) -> IN 40H bits 2:0 = RUN,MODE,NEXT
+                        ;
+                        ; Timer ISR must be stopped to prevent C0H conflicts.
+                        ;
+                        ; Assemble: asmx -C 8080 -e -w -o BUTTONS.hex BUTTONS.ASM
+                        ;=====================================================
+
+8000                            ORG     8000H
+
+                        ;------------------------------------------------------
+                        ; ROM / hardware equates
+                        ;------------------------------------------------------
+      = 0BAF            PRINTI      EQU 0BAFH       ; Print inline null-terminated string
+      = 015B            MAIN_MENU   EQU 015BH       ; Monitor main menu entry
+      = 0BF6            PUT_CHAR    EQU 0BF6H       ; Print char in A
+      = 0BDE            GETCHAR     EQU 0BDEH       ; ROM blocking char read
+      = 00C0            OUTPORT     EQU 0C0H        ; LED + TX output port
+      = 0040            INPORT      EQU 040H        ; Switch input port
+      = 0046            TIMER       EQU 046H        ; Timer control port
+      = FF45            TIMERV      EQU 0FF45H      ; TIMER_RUN variable in RAM
+      = FF2E            RXBHEAD     EQU 0FF2EH      ; UART RX buffer head pointer
+      = FF30            RXBTAIL     EQU 0FF30H      ; UART RX buffer tail pointer
+
+                        ;======================================================
+8000                    START:
+                                ; --- Print banner ---
+8000  CD AF0B                   CALL    PRINTI
+8003  0D0A                      DB      0DH,0AH
+8005  42555454 4F4E5320         DB      'BUTTONS - Switch Test',0DH,0AH
+800D  2D205377 69746368
+8015  20546573 740D0A
+801C  50726573 73206275         DB      'Press buttons to test. ESC=exit',0DH,0AH,0
+8024  74746F6E 7320746F
+802C  20746573 742E2045
+8034  53433D65 7869740D
+803C  0A00
+
+                                ; --- Save and stop timer ---
+803E  3A 45FF                   LDA     TIMERV
+8041  32 FA81                   STA     SAVTMR
+8044  AF                        XRA     A
+8045  32 45FF                   STA     TIMERV
+8048  D3 46                     OUT     TIMER
+
+                                ; --- Clear previous state ---
+804A  AF                        XRA     A
+804B  32 F881                   STA     PREV_DATA
+804E  32 F981                   STA     PREV_CTL
+
+                        ;------------------------------------------------------
+                        ; Main loop: scan switches and display on LEDs
+                        ;------------------------------------------------------
+8051                    MAINLP:
+                                ; === Read Data Switches D0-D3 ===
+8051  3E C0                     MVI     A,0C0H          ; column 4 select + TX idle
+8053  D3 C0                     OUT     OUTPORT
+8055  DB 40                     IN      INPORT          ; bits 3:0 = D0-D3 (active low)
+8057  E6 0F                     ANI     0FH
+8059  2F                        CMA                     ; invert: 1=pressed
+805A  E6 0F                     ANI     0FH
+805C  47                        MOV     B,A             ; B = D0-D3
+
+                                ; === Read Data Switches D4-D7 ===
+805D  3E D0                     MVI     A,0D0H          ; column 5 select + TX idle
+805F  D3 C0                     OUT     OUTPORT
+8061  DB 40                     IN      INPORT          ; bits 3:0 = D4-D7 (active low)
+8063  E6 0F                     ANI     0FH
+8065  2F                        CMA
+8066  E6 0F                     ANI     0FH
+                                ; Shift to upper nibble
+8068  07                        RLC
+8069  07                        RLC
+806A  07                        RLC
+806B  07                        RLC
+806C  B0                        ORA     B               ; A = D7..D0 full byte (1=pressed)
+806D  32 F681                   STA     CUR_DATA        ; save current data switches
+
+                                ; === Read Control Switches ===
+8070  3E E0                     MVI     A,0E0H          ; column 6 select + TX idle
+8072  D3 C0                     OUT     OUTPORT
+8074  DB 40                     IN      INPORT          ; bit0=RUN, bit1=MODE, bit2=NEXT (active low)
+8076  E6 07                     ANI     07H
+8078  2F                        CMA
+8079  E6 07                     ANI     07H
+807B  32 F781                   STA     CUR_CTL         ; save current control switches
+
+                                ; === Display on LEDs ===
+                                ; All 7 columns need refreshing for POV.
+                                ; Blank address LEDs (cols 0-3), show data + status.
+807E  06 0A                     MVI     B,10            ; refresh cycles per scan
+
+8080                    REFLP:
+                                ; Col 0: addr high low nibble - blank
+8080  3E 80                     MVI     A,80H
+8082  D3 C0                     OUT     OUTPORT
+8084  CD ED81                   CALL    SMLDLY
+
+                                ; Col 1: addr high high nibble - blank
+8087  3E 90                     MVI     A,90H
+8089  D3 C0                     OUT     OUTPORT
+808B  CD ED81                   CALL    SMLDLY
+
+                                ; Col 2: addr low low nibble - blank
+808E  3E A0                     MVI     A,0A0H
+8090  D3 C0                     OUT     OUTPORT
+8092  CD ED81                   CALL    SMLDLY
+
+                                ; Col 3: addr low high nibble - blank
+8095  3E B0                     MVI     A,0B0H
+8097  D3 C0                     OUT     OUTPORT
+8099  CD ED81                   CALL    SMLDLY
+
+                                ; Col 4: data low nibble (D0-D3)
+809C  3A F681                   LDA     CUR_DATA
+809F  E6 0F                     ANI     0FH
+80A1  F6 C0                     ORI     0C0H            ; col 4 + TX idle
+80A3  D3 C0                     OUT     OUTPORT
+80A5  CD ED81                   CALL    SMLDLY
+
+                                ; Col 5: data high nibble (D4-D7)
+80A8  3A F681                   LDA     CUR_DATA
+80AB  0F                        RRC
+80AC  0F                        RRC
+80AD  0F                        RRC
+80AE  0F                        RRC
+80AF  E6 0F                     ANI     0FH
+80B1  F6 D0                     ORI     0D0H            ; col 5 + TX idle
+80B3  D3 C0                     OUT     OUTPORT
+80B5  CD ED81                   CALL    SMLDLY
+
+                                ; Col 6: status (control switches)
+                                ; S0=RUN, S1=MODE, S2=NEXT
+80B8  3A F781                   LDA     CUR_CTL
+80BB  E6 0F                     ANI     0FH
+80BD  F6 E0                     ORI     0E0H            ; col 6 + TX idle
+80BF  D3 C0                     OUT     OUTPORT
+80C1  CD ED81                   CALL    SMLDLY
+
+80C4  05                        DCR     B
+80C5  C2 8080                   JNZ     REFLP
+
+                                ; === Check for state change -> print ===
+80C8  3A F681                   LDA     CUR_DATA
+80CB  47                        MOV     B,A
+80CC  3A F881                   LDA     PREV_DATA
+80CF  B8                        CMP     B
+80D0  C2 E180                   JNZ     CHANGED
+
+80D3  3A F781                   LDA     CUR_CTL
+80D6  47                        MOV     B,A
+80D7  3A F981                   LDA     PREV_CTL
+80DA  B8                        CMP     B
+80DB  C2 E180                   JNZ     CHANGED
+
+80DE  C3 9A81                   JMP     NOCHANGE
+
+80E1                    CHANGED:
+                                ; Update previous state
+80E1  3A F681                   LDA     CUR_DATA
+80E4  32 F881                   STA     PREV_DATA
+80E7  3A F781                   LDA     CUR_CTL
+80EA  32 F981                   STA     PREV_CTL
+
+                                ; Print current state
+                                ; Format: "D=XX CTL=XX  D7 D6 D5 D4 D3 D2 D1 D0  RUN MOD NXT"
+80ED  CD AF0B                   CALL    PRINTI
+80F0  0D443D00                  DB      0DH,'D=',0
+
+80F4  3A F681                   LDA     CUR_DATA
+80F7  CD C881                   CALL    PRHEX
+
+80FA  CD AF0B                   CALL    PRINTI
+80FD  2043746C 3D00             DB      ' Ctl=',0
+
+8103  3A F781                   LDA     CUR_CTL
+8106  CD C881                   CALL    PRHEX
+
+8109  CD AF0B                   CALL    PRINTI
+810C  202000                    DB      '  ',0
+
+                                ; Print individual data switch names
+810F  0E 08                     MVI     C,8             ; 8 data switches
+8111  16 80                     MVI     D,80H           ; start from D7 (MSB)
+8113                    PDSW:
+8113  3A F681                   LDA     CUR_DATA
+8116  A2                        ANA     D               ; test this bit
+8117  CA 3081                   JZ      PDOFF
+                                ; ON - print "D<n> "
+811A  3E 44                     MVI     A,'D'
+811C  CD F60B                   CALL    PUT_CHAR
+                                ; Compute digit: D7 when mask=80, D0 when mask=01
+811F  7A                        MOV     A,D
+8120  CD DF81                   CALL    BITNUM          ; A = bit number
+8123  C6 30                     ADI     '0'
+8125  CD F60B                   CALL    PUT_CHAR
+8128  3E 20                     MVI     A,' '
+812A  CD F60B                   CALL    PUT_CHAR
+812D  C3 3F81                   JMP     PDNXT
+8130                    PDOFF:
+                                ; OFF - print ".. "
+8130  3E 2E                     MVI     A,'.'
+8132  CD F60B                   CALL    PUT_CHAR
+8135  3E 2E                     MVI     A,'.'
+8137  CD F60B                   CALL    PUT_CHAR
+813A  3E 20                     MVI     A,' '
+813C  CD F60B                   CALL    PUT_CHAR
+813F                    PDNXT:
+813F  7A                        MOV     A,D
+8140  0F                        RRC                     ; shift mask right
+8141  57                        MOV     D,A
+8142  0D                        DCR     C
+8143  C2 1381                   JNZ     PDSW
+
+                                ; Print control switches
+8146  CD AF0B                   CALL    PRINTI
+8149  2000                      DB      ' ',0
+
+                                ; RUN (bit 0)
+814B  3A F781                   LDA     CUR_CTL
+814E  E6 01                     ANI     01H
+8150  CA 5E81                   JZ      NORUN
+8153  CD AF0B                   CALL    PRINTI
+8156  52554E20 00               DB      'RUN ',0
+815B  C3 6681                   JMP     DOMOD
+815E                    NORUN:
+815E  CD AF0B                   CALL    PRINTI
+8161  2E2E2E20 00               DB      '... ',0
+
+8166                    DOMOD:
+                                ; MODE (bit 1)
+8166  3A F781                   LDA     CUR_CTL
+8169  E6 02                     ANI     02H
+816B  CA 7981                   JZ      NOMOD
+816E  CD AF0B                   CALL    PRINTI
+8171  4D4F4420 00               DB      'MOD ',0
+8176  C3 8181                   JMP     DONXT
+8179                    NOMOD:
+8179  CD AF0B                   CALL    PRINTI
+817C  2E2E2E20 00               DB      '... ',0
+
+8181                    DONXT:
+                                ; NEXT (bit 2)
+8181  3A F781                   LDA     CUR_CTL
+8184  E6 04                     ANI     04H
+8186  CA 9381                   JZ      NONXT
+8189  CD AF0B                   CALL    PRINTI
+818C  4E585400                  DB      'NXT',0
+8190  C3 9A81                   JMP     DONEP
+8193                    NONXT:
+8193  CD AF0B                   CALL    PRINTI
+8196  2E2E2E00                  DB      '...',0
+
+819A                    DONEP:
+
+819A                    NOCHANGE:
+                                ; === Check UART for ESC ===
+819A  3A 2EFF                   LDA     RXBHEAD
+819D  21 30FF                   LXI     H,RXBTAIL
+81A0  96                        SUB     M
+81A1  CA 5180                   JZ      MAINLP          ; no key, keep scanning
+
+                                ; Key available - read it
+81A4  CD DE0B                   CALL    GETCHAR
+81A7  FE 1B                     CPI     1BH             ; ESC?
+81A9  C2 5180                   JNZ     MAINLP          ; not ESC, keep going
+
+                        ;------------------------------------------------------
+                        ; Exit: restore timer, return to monitor
+                        ;------------------------------------------------------
+                                ; LEDs off
+81AC  3E 80                     MVI     A,80H
+81AE  D3 C0                     OUT     OUTPORT
+
+                                ; Restore timer
+81B0  3A FA81                   LDA     SAVTMR
+81B3  32 45FF                   STA     TIMERV
+81B6  D3 46                     OUT     TIMER
+
+81B8  CD AF0B                   CALL    PRINTI
+81BB  0D0A446F 6E652E0D         DB      0DH,0AH,'Done.',0DH,0AH,0
+81C3  0A00
+
+81C5  C3 5B01                   JMP     MAIN_MENU
+
+                        ;------------------------------------------------------
+                        ; PRHEX - Print A as two hex digits
+                        ;------------------------------------------------------
+81C8                    PRHEX:
+81C8  F5                        PUSH    PSW
+81C9  0F                        RRC
+81CA  0F                        RRC
+81CB  0F                        RRC
+81CC  0F                        RRC
+81CD  CD D181                   CALL    PRNIB
+81D0  F1                        POP     PSW
+81D1                    PRNIB:
+81D1  E6 0F                     ANI     0FH
+81D3  C6 30                     ADI     '0'
+81D5  FE 3A                     CPI     '9'+1
+81D7  DA DC81                   JC      PRNIB1
+81DA  C6 07                     ADI     7               ; 'A'-'9'-1
+81DC                    PRNIB1:
+81DC  C3 F60B                   JMP     PUT_CHAR
+
+                        ;------------------------------------------------------
+                        ; BITNUM - Convert single-bit mask in A to bit number
+                        ; Input:  A = power of 2 (01,02,04,08,10,20,40,80)
+                        ; Output: A = bit number (0-7)
+                        ;------------------------------------------------------
+81DF                    BITNUM:
+81DF  C5                        PUSH    B
+81E0  06 00                     MVI     B,0
+81E2                    BNLP:
+81E2  0F                        RRC
+81E3  DA EA81                   JC      BNDONE
+81E6  04                        INR     B
+81E7  C3 E281                   JMP     BNLP
+81EA                    BNDONE:
+81EA  78                        MOV     A,B
+81EB  C1                        POP     B
+81EC  C9                        RET
+
+                        ;------------------------------------------------------
+                        ; SMLDLY - Small delay for LED column persistence
+                        ;------------------------------------------------------
+81ED                    SMLDLY:
+81ED  C5                        PUSH    B
+81EE  06 50                     MVI     B,80
+81F0  05                SDLP:   DCR     B
+81F1  C2 F081                   JNZ     SDLP
+81F4  C1                        POP     B
+81F5  C9                        RET
+
+                        ;------------------------------------------------------
+                        ; Data
+                        ;------------------------------------------------------
+81F6  00                CUR_DATA:   DB  00H         ; current data switch state
+81F7  00                CUR_CTL:    DB  00H         ; current control switch state
+81F8  00                PREV_DATA:  DB  00H         ; previous data switch state
+81F9  00                PREV_CTL:   DB  00H         ; previous control switch state
+81FA  00                SAVTMR:     DB  00H         ; saved timer value
+
+81FB   (8000)                   END     START
+
+BITNUM             81DF    BNDONE             81EA    BNLP               81E2
+CHANGED            80E1    CUR_CTL            81F7    CUR_DATA           81F6
+DOMOD              8166    DONEP              819A    DONXT              8181
+GETCHAR            0BDE E  INPORT             0040 E  MAINLP             8051
+MAIN_MENU          015B E  NOCHANGE           819A    NOMOD              8179
+NONXT              8193    NORUN              815E    OUTPORT            00C0 E
+PDNXT              813F    PDOFF              8130    PDSW               8113
+PREV_CTL           81F9    PREV_DATA          81F8    PRHEX              81C8
+PRINTI             0BAF E  PRNIB              81D1    PRNIB1             81DC
+PUT_CHAR           0BF6 E  REFLP              8080    RXBHEAD            FF2E E
+RXBTAIL            FF30 E  SAVTMR             81FA    SDLP               81F0
+SMLDLY             81ED    START              8000    TIMER              0046 E
+TIMERV             FF45 E

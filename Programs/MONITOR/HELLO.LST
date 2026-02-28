@@ -1,0 +1,32 @@
+                        ;=====================================================
+                        ; HELLO.ASM - Hello from HEX! test program
+                        ;
+                        ; Monitor program for the Altaid 8800.
+                        ; Load via the : (Intel HEX) command, run with G 8000.
+                        ;
+                        ; Uses ROM routine PRINTI to print an inline string,
+                        ; then returns to the monitor main menu.
+                        ;
+                        ; Assemble: asmx -C 8080 -e -w -o HELLO.hex HELLO.ASM
+                        ;=====================================================
+
+8000                            ORG     8000H
+
+                        ;------------------------------------------------------
+                        ; ROM routine equates
+                        ;------------------------------------------------------
+      = 0BAF            PRINTI      EQU 0BAFH       ; Print inline null-terminated string
+      = 015B            MAIN_MENU   EQU 015BH       ; Monitor main menu entry
+
+                        ;======================================================
+8000                    START:
+8000  CD AF0B                   CALL    PRINTI
+8003  0D0A4865 6C6C6F20         DB      0DH,0AH,'Hello from HEX!',0DH,0AH,0
+800B  66726F6D 20484558
+8013  210D0A00
+
+8017  C3 5B01                   JMP     MAIN_MENU
+
+801A   (8000)                   END     START
+
+MAIN_MENU          015B E  PRINTI             0BAF E  START              8000

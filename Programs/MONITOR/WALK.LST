@@ -1,0 +1,140 @@
+                        ;=====================================================
+                        ; WALK.ASM - Walking Bit on Data LEDs
+                        ;
+                        ; Monitor program for the Altaid 8800.
+                        ; Load via the : (Intel HEX) command, run with G 8000.
+                        ;
+                        ; A single lit LED walks right across the 8 data LEDs,
+                        ; wrapping from D0 back to D7 continuously.
+                        ; Press any key to stop and return to the monitor.
+                        ;
+                        ; Port C0H is multiplexed: bits 6:4 select column,
+                        ; bits 3:0 are the nibble, bit 7 = TX idle (always 1).
+                        ;   Column 4 (C0H prefix) = data low nibble  (D0-D3)
+                        ;   Column 5 (D0H prefix) = data high nibble (D4-D7)
+                        ;
+                        ; Timer ISR must be stopped to prevent C0H conflicts.
+                        ; UART RX buffer is checked directly for exit key.
+                        ;
+                        ; Assemble: asmx -C 8080 -e -w -o WALK.hex WALK.ASM
+                        ;=====================================================
+
+8000                            ORG     8000H
+
+                        ;------------------------------------------------------
+                        ; ROM / hardware equates
+                        ;------------------------------------------------------
+      = 0BAF            PRINTI      EQU 0BAFH       ; Print inline null-terminated string
+      = 015B            MAIN_MENU   EQU 015BH       ; Monitor main menu entry
+      = 00C0            OUTPORT     EQU 0C0H        ; LED + TX output port
+      = 0046            TIMER       EQU 046H        ; Timer control port
+      = FF45            TIMERV      EQU 0FF45H      ; TIMER_RUN variable in RAM
+      = FF2E            RXBHEAD     EQU 0FF2EH      ; UART RX buffer head pointer
+      = FF30            RXBTAIL     EQU 0FF30H      ; UART RX buffer tail pointer
+      = 0BDE            GETCHAR     EQU 0BDEH       ; ROM blocking char read
+
+      = 003C            SCAN_COUNT  EQU 60           ; POV scan cycles per step (speed)
+
+                        ;======================================================
+8000                    START:
+                                ; --- Print banner ---
+8000  CD AF0B                   CALL    PRINTI
+8003  0D0A5741 4C4B202D         DB      0DH,0AH,'WALK - ESC=exit',0DH,0AH,0
+800B  20455343 3D657869
+8013  740D0A00
+
+                                ; --- Save and stop timer ---
+8017  3A 45FF                   LDA     TIMERV
+801A  32 8680                   STA     SAVTMR
+801D  AF                        XRA     A
+801E  32 45FF                   STA     TIMERV
+8021  D3 46                     OUT     TIMER
+
+                                ; --- Init: start at D0 (rightmost) ---
+8023  3E 01                     MVI     A,01H
+8025  32 8580                   STA     PATTERN
+
+                        ;------------------------------------------------------
+                        ; Main loop: multiplex data LEDs for persistence of vision
+                        ;------------------------------------------------------
+8028                    MAINLP:
+8028  06 3C                     MVI     B,SCAN_COUNT
+
+802A                    SCAN:
+                                ; Column 4: low nibble (D0-D3)
+802A  3A 8580                   LDA     PATTERN
+802D  E6 0F                     ANI     0FH
+802F  F6 C0                     ORI     0C0H            ; col 4 + TX idle
+8031  D3 C0                     OUT     OUTPORT
+
+8033  0E 00                     MVI     C,0             ; 256-iter delay
+8035  0D                DLY1:   DCR     C
+8036  C2 3580                   JNZ     DLY1
+
+                                ; Column 5: high nibble (D4-D7)
+8039  3A 8580                   LDA     PATTERN
+803C  0F                        RRC
+803D  0F                        RRC
+803E  0F                        RRC
+803F  0F                        RRC
+8040  E6 0F                     ANI     0FH
+8042  F6 D0                     ORI     0D0H            ; col 5 + TX idle
+8044  D3 C0                     OUT     OUTPORT
+
+8046  0E 00                     MVI     C,0             ; 256-iter delay
+8048  0D                DLY2:   DCR     C
+8049  C2 4880                   JNZ     DLY2
+
+804C  05                        DCR     B
+804D  C2 2A80                   JNZ     SCAN
+
+                                ; --- Walk the bit right ---
+8050  3A 8580                   LDA     PATTERN
+8053  0F                        RRC
+8054  32 8580                   STA     PATTERN
+
+                                ; --- Check UART buffer for keypress ---
+8057  3A 2EFF                   LDA     RXBHEAD
+805A  21 30FF                   LXI     H,RXBTAIL
+805D  96                        SUB     M
+805E  CA 2880                   JZ      MAINLP          ; no key, keep going
+
+                                ; Read key - only ESC exits
+8061  CD DE0B                   CALL    GETCHAR
+8064  FE 1B                     CPI     1BH
+8066  C2 2880                   JNZ     MAINLP
+
+                        ;------------------------------------------------------
+                        ; Exit: restore timer, return to monitor
+                        ;------------------------------------------------------
+
+                                ; LEDs off
+8069  3E 80                     MVI     A,80H
+806B  D3 C0                     OUT     OUTPORT
+
+                                ; Restore timer
+806D  3A 8680                   LDA     SAVTMR
+8070  32 45FF                   STA     TIMERV
+8073  D3 46                     OUT     TIMER
+
+                                ; Exit message
+8075  CD AF0B                   CALL    PRINTI
+8078  0D0A446F 6E652E0D         DB      0DH,0AH,'Done.',0DH,0AH,0
+8080  0A00
+
+8082  C3 5B01                   JMP     MAIN_MENU
+
+                        ;------------------------------------------------------
+                        ; Data
+                        ;------------------------------------------------------
+8085  01                PATTERN:    DB  01H
+8086  00                SAVTMR:     DB  00H
+
+8087   (8000)                   END     START
+
+DLY1               8035    DLY2               8048    GETCHAR            0BDE E
+MAINLP             8028    MAIN_MENU          015B E  OUTPORT            00C0 E
+PATTERN            8085    PRINTI             0BAF E  RXBHEAD            FF2E E
+RXBTAIL            FF30 E  SAVTMR             8086    SCAN               802A
+SCAN_COUNT         003C E  START              8000    TIMER              0046 E
+TIMERV             FF45 E

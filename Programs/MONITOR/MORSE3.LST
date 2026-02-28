@@ -1,0 +1,608 @@
+                        ; =============================================================
+                        ; MORSE3.ASM - Morse Code Tape Reader with Audio Tones
+                        ; =============================================================
+                        ; Monitor program for Altaid 8800 -- load at 8000H via ':'
+                        ;
+                        ; Based on MORSE.ASM but adds audible dot/dash tones through
+                        ; the cassette output port (44H).  Connect a small speaker or
+                        ; piezo buzzer to the cassette output.
+                        ;
+                        ; Uses a compact 2-LED dash display (same as MORSE2) instead of
+                        ; the standard 3-LED dash.  This keeps more of the message
+                        ; visible on the 28-LED strip.  Audio timing remains correct:
+                        ; dash tone plays for the full 3 units even though only 2 LEDs
+                        ; are lit.  See MORSE.ASM for the standard-width LED display.
+                        ;
+                        ; Type characters on the serial terminal and watch Morse code
+                        ; scroll across all 28 LEDs while hearing the corresponding
+                        ; dits and dahs.  The tone plays during on-elements (dots and
+                        ; dashes) and is silent during gaps.
+                        ;
+                        ; LED layout (same as MORSE.ASM):
+                        ;   Top row:    Address LEDs A15..A0  (16 LEDs)
+                        ;   Bottom row: Data D7..D0 + Status S3..S0  (12 LEDs)
+                        ;
+                        ; Morse timing:
+                        ;   Dot   = 1 unit on  (tone plays, 1 LED lit)
+                        ;   Dash  = 3 units on (tone plays, 2 LEDs lit + 1 dark)
+                        ;   Gap between elements = 1 unit off (silent)
+                        ;   Gap between letters  = 3 units off (silent)
+                        ;   Gap between words    = 7 units off (silent)
+                        ;
+                        ; Supports A-Z, 0-9 and space.  Press ESC to exit.
+                        ;
+                        ; Assemble: asmx -C 8080 -e -w -o MORSE3.hex MORSE3.ASM
+                        ; =============================================================
+
+8000                            ORG     8000H
+
+                        ; --- ROM entry points ---
+      = 0BAF            PRINTI  EQU     0BAFH
+      = 0BDE            GETCHAR EQU     0BDEH           ; blocking read with echo
+      = 015B            MAINMNU EQU     015BH
+
+                        ; --- UART RX buffer pointers ---
+      = FF2E            RXBHEAD EQU     0FF2EH
+      = FF30            RXBTAIL EQU     0FF30H
+
+                        ; --- Timer ---
+      = FF45            TMRVAL  EQU     0FF45H
+
+                        ; --- Hardware ports ---
+      = 00C0            OUTPORT EQU     0C0H            ; LED + TX output port
+      = 0044            CASSETTE EQU    044H            ; Cassette output port
+
+                        ; --- Tone timing ---
+                        ; TONEDLY = half-period delay for the square-wave tone.
+                        ; Each inner loop iteration is ~15 cycles.
+      = 0032            TONEDLY EQU     50              ; ~1.2 kHz tone
+      = 0028            SPEED   EQU     40              ; refresh iterations per unit
+      = 0020            TBUFSZ  EQU     32              ; type-ahead buffer size
+
+                        ; =============================================================
+8000                    START:
+8000  AF                        XRA     A
+8001  D3 46                     OUT     46H             ; stop hardware timer
+
+                                ; Silence cassette
+8003  D3 44                     OUT     CASSETTE
+
+8005  CD AF0B                   CALL    PRINTI
+8008  0D0A                      DB      0DH, 0AH
+800A  4D4F5253 4533202D         DB      'MORSE3 - Tape Reader + Audio'
+8012  20546170 65205265
+801A  61646572 202B2041
+8022  7564696F
+8026  0D0A                      DB      0DH, 0AH
+8028  54797065 20746F20         DB      'Type to see/hear Morse. ESC=exit'
+8030  7365652F 68656172
+8038  204D6F72 73652E20
+8040  4553433D 65786974
+8048  0D0A00                    DB      0DH, 0AH, 0
+
+                                ; Clear tape shift register
+804B  AF                        XRA     A
+804C  32 B482                   STA     TAPE
+804F  32 B582                   STA     TAPE+1
+8052  32 B682                   STA     TAPE+2
+8055  32 B782                   STA     TAPE+3
+8058  32 B882                   STA     CASSOUT
+
+                                ; Clear type-ahead buffer
+805B  32 D982                   STA     TBCNT
+805E  32 DA82                   STA     TBWR
+8061  32 DB82                   STA     TBRD
+
+                        ; -------------------------------------------------------------
+                        ; Main loop - wait for character with active LED refresh
+                        ; -------------------------------------------------------------
+8064                    MAIN:
+                                ; Drain any pending UART chars into type-ahead buffer
+8064  CD 3482                   CALL    DRAIN
+
+                                ; Check type-ahead buffer first
+8067  3A D982                   LDA     TBCNT
+806A  B7                        ORA     A
+806B  C2 7480                   JNZ     TBPOP           ; have buffered char, use it
+
+                                ; Nothing buffered - refresh LEDs and loop
+806E  CD DA81                   CALL    SHOWLED
+8071  C3 6480                   JMP     MAIN
+
+                        ; Read one char from type-ahead buffer
+8074                    TBPOP:
+8074  21 B982                   LXI     H, TBUF
+8077  3A DB82                   LDA     TBRD
+807A  85                        ADD     L
+807B  6F                        MOV     L, A
+807C  7C                        MOV     A, H
+807D  CE 00                     ACI     0
+807F  67                        MOV     H, A
+8080  7E                        MOV     A, M            ; A = buffered char
+8081  F5                        PUSH    PSW
+8082  3A DB82                   LDA     TBRD
+8085  3C                        INR     A
+8086  FE 20                     CPI     TBUFSZ
+8088  DA 8C80                   JC      TBNW
+808B  AF                        XRA     A
+808C  32 DB82           TBNW:   STA     TBRD
+808F  3A D982                   LDA     TBCNT
+8092  3D                        DCR     A
+8093  32 D982                   STA     TBCNT
+8096  F1                        POP     PSW
+
+8097  FE 1B                     CPI     1BH             ; ESC = exit
+8099  CA 1481                   JZ      EXIT
+
+809C  FE 0D                     CPI     0DH             ; CR = clear display
+809E  CA F080                   JZ      DOCLEAR
+
+80A1  FE 20                     CPI     20H             ; space = word gap
+80A3  CA 0581                   JZ      DOWORD
+
+                                ; Convert lowercase to uppercase
+80A6  FE 61                     CPI     'a'
+80A8  DA B280                   JC      NOTLC
+80AB  FE 7B                     CPI     'z'+1
+80AD  D2 B280                   JNC     NOTLC
+80B0  D6 20                     SUI     20H
+80B2                    NOTLC:
+                                ; Look up A-Z
+80B2  FE 41                     CPI     'A'
+80B4  DA C480                   JC      TRYNUM
+80B7  FE 5B                     CPI     'Z'+1
+80B9  D2 6480                   JNC     MAIN            ; unsupported, ignore
+80BC  D6 41                     SUI     'A'
+80BE  21 8082                   LXI     H, MTBL_AZ
+80C1  C3 D380                   JMP     LOOKUP
+
+80C4                    TRYNUM:
+                                ; Look up 0-9
+80C4  FE 30                     CPI     '0'
+80C6  DA 6480                   JC      MAIN
+80C9  FE 3A                     CPI     '9'+1
+80CB  D2 6480                   JNC     MAIN
+80CE  D6 30                     SUI     '0'
+80D0  21 9A82                   LXI     H, MTBL_09
+
+80D3                    LOOKUP:
+                                ; A = table index, HL = table base
+80D3  85                        ADD     L
+80D4  6F                        MOV     L, A
+80D5  7C                        MOV     A, H
+80D6  CE 00                     ACI     0
+80D8  67                        MOV     H, A
+80D9  7E                        MOV     A, M            ; Morse byte (sentinel encoding)
+
+80DA  B7                        ORA     A
+80DB  CA 6480                   JZ      MAIN            ; 0 = invalid, skip
+
+80DE  CD 2C81                   CALL    DOMORSE
+
+                                ; Inter-letter gap: 2 more off-units (1 already from DOMORSE)
+80E1  CD 7581                   CALL    SHIFT0
+80E4  CD C081                   CALL    UNITOFF
+80E7  CD 7581                   CALL    SHIFT0
+80EA  CD C081                   CALL    UNITOFF
+
+80ED  C3 6480                   JMP     MAIN
+
+                        ; -------------------------------------------------------------
+                        ; Return: clear display and send CR+LF to serial
+                        ; -------------------------------------------------------------
+80F0                    DOCLEAR:
+80F0  CD AF0B                   CALL    PRINTI
+80F3  0D0A00                    DB      0DH, 0AH, 0
+80F6  0E 1C                     MVI     C, 28
+80F8                    DCLRLP:
+80F8  CD 7581                   CALL    SHIFT0
+80FB  0D                        DCR     C
+80FC  C2 F880                   JNZ     DCLRLP
+80FF  CD DA81                   CALL    SHOWLED
+8102  C3 6480                   JMP     MAIN
+
+                        ; -------------------------------------------------------------
+                        ; Word space: 7 off-units total (3 already from inter-letter)
+                        ; -------------------------------------------------------------
+8105                    DOWORD:
+8105  0E 04                     MVI     C, 4
+8107                    DWLP:
+8107  CD 7581                   CALL    SHIFT0
+810A  CD C081                   CALL    UNITOFF
+810D  0D                        DCR     C
+810E  C2 0781                   JNZ     DWLP
+8111  C3 6480                   JMP     MAIN
+
+                        ; -------------------------------------------------------------
+                        ; Exit to monitor
+                        ; -------------------------------------------------------------
+8114                    EXIT:
+                                ; Silence cassette
+8114  AF                        XRA     A
+8115  D3 44                     OUT     CASSETTE
+
+8117  3A 45FF                   LDA     TMRVAL
+811A  D3 46                     OUT     46H             ; restore timer ISR
+811C  CD AF0B                   CALL    PRINTI
+811F  0D0A                      DB      0DH, 0AH
+8121  446F6E65 2E               DB      'Done.'
+8126  0D0A00                    DB      0DH, 0AH, 0
+8129  C3 5B01                   JMP     MAINMNU
+
+                        ; =============================================================
+                        ; DOMORSE - Process Morse byte (sentinel encoding)
+                        ;   Input: A = Morse byte
+                        ;   Sentinel encoding: highest set bit is a sentinel marker,
+                        ;   remaining bits below it are elements (0=dot, 1=dash).
+                        ; =============================================================
+812C                    DOMORSE:
+812C  C5                        PUSH    B
+812D  47                        MOV     B, A            ; B = work copy
+812E  0E 08                     MVI     C, 8            ; bit counter
+
+                                ; Left-justify: shift until sentinel reaches bit 7
+8130                    FNDSEN:
+8130  78                        MOV     A, B
+8131  87                        ADD     A               ; shift left, bit7 -> CY
+8132  47                        MOV     B, A
+8133  DA 3D81                   JC      GOTSEN          ; CY=1: sentinel found
+8136  0D                        DCR     C
+8137  C2 3081                   JNZ     FNDSEN
+813A  C3 6F81                   JMP     MRDONE          ; no sentinel (shouldn't happen)
+
+813D                    GOTSEN:
+813D  0D                        DCR     C               ; C = remaining element bits
+813E  CA 6F81                   JZ      MRDONE          ; no elements after sentinel
+
+                                ; Process each element from MSB down
+8141                    MELM:
+8141  78                        MOV     A, B
+8142  87                        ADD     A               ; next element bit -> CY
+8143  47                        MOV     B, A
+8144  DA 5381                   JC      MDASH
+
+                                ; Dot: 1 unit on
+8147  CD 7181                   CALL    SHIFT1
+814A  CD 9581                   CALL    UNITON
+814D  CD B981                   CALL    CASSOFF
+8150  C3 6581                   JMP     MEGAP
+
+8153                    MDASH:
+                                ; Dash: 3 units tone, only 2 LEDs lit (compact display)
+8153  CD 7181                   CALL    SHIFT1
+8156  CD 9581                   CALL    UNITON          ; unit 1: LED on, tone
+8159  CD 7181                   CALL    SHIFT1
+815C  CD 9581                   CALL    UNITON          ; unit 2: LED on, tone
+815F  CD 9581                   CALL    UNITON          ; unit 3: tone only (no shift)
+8162  CD B981                   CALL    CASSOFF
+
+8165                    MEGAP:
+                                ; Inter-element gap: 1 unit off (silent)
+8165  CD 7581                   CALL    SHIFT0
+8168  CD C081                   CALL    UNITOFF
+
+816B  0D                        DCR     C
+816C  C2 4181                   JNZ     MELM
+
+816F                    MRDONE:
+816F  C1                        POP     B
+8170  C9                        RET
+
+                        ; =============================================================
+                        ; SHIFT1 / SHIFT0 - Shift a bit into the 28-bit tape register
+                        ; =============================================================
+8171                    SHIFT1:
+8171  37                        STC                     ; CY = 1
+8172  C3 7681                   JMP     DOSHIFT
+
+8175                    SHIFT0:
+8175  B7                        ORA     A               ; CY = 0
+
+8176                    DOSHIFT:
+8176  3A B482                   LDA     TAPE
+8179  17                        RAL
+817A  32 B482                   STA     TAPE
+817D  3A B582                   LDA     TAPE+1
+8180  17                        RAL
+8181  32 B582                   STA     TAPE+1
+8184  3A B682                   LDA     TAPE+2
+8187  17                        RAL
+8188  32 B682                   STA     TAPE+2
+818B  3A B782                   LDA     TAPE+3
+818E  17                        RAL
+818F  E6 0F                     ANI     0FH             ; keep only 4 bits (28 total)
+8191  32 B782                   STA     TAPE+3
+8194  C9                        RET
+
+                        ; =============================================================
+                        ; UNITON - One Morse time unit with tone
+                        ; =============================================================
+8195                    UNITON:
+8195  C5                        PUSH    B
+8196  D5                        PUSH    D
+8197  06 28                     MVI     B, SPEED        ; refresh iterations per unit
+
+8199                    UONLP:
+8199  CD DA81                   CALL    SHOWLED         ; refresh LEDs once
+
+                                ; Play several tone half-cycles per LED refresh
+819C  16 06                     MVI     D, 6            ; half-cycles per refresh
+819E                    TONLP:
+                                ; Toggle cassette output
+819E  3A B882                   LDA     CASSOUT
+81A1  EE 01                     XRI     01H
+81A3  32 B882                   STA     CASSOUT
+81A6  D3 44                     OUT     CASSETTE
+
+                                ; Tone half-period delay
+81A8  1E 32                     MVI     E, TONEDLY
+81AA  1D                TONDLY: DCR     E
+81AB  C2 AA81                   JNZ     TONDLY
+
+81AE  15                        DCR     D
+81AF  C2 9E81                   JNZ     TONLP
+
+81B2  05                        DCR     B
+81B3  C2 9981                   JNZ     UONLP
+
+81B6  D1                        POP     D
+81B7  C1                        POP     B
+81B8  C9                        RET
+
+                        ; =============================================================
+                        ; CASSOFF - Silence cassette output (clean tone cutoff)
+                        ; =============================================================
+81B9                    CASSIOFF:
+81B9                    CASSOFF:
+81B9  AF                        XRA     A
+81BA  32 B882                   STA     CASSOUT
+81BD  D3 44                     OUT     CASSETTE
+81BF  C9                        RET
+
+                        ; =============================================================
+                        ; UNITOFF - One Morse time unit with LED refresh, NO tone
+                        ;
+                        ; Same total duration as UNITDOT/UNITDAH but cassette stays
+                        ; silent.  Uses DAHDLY for the delay to roughly match timing.
+                        ; =============================================================
+81C0                    UNITOFF:
+81C0  C5                        PUSH    B
+81C1  D5                        PUSH    D
+81C2  06 28                     MVI     B, SPEED        ; same refresh count as UNITON
+
+81C4                    UOFFLP:
+81C4  CD DA81                   CALL    SHOWLED         ; refresh LEDs once
+
+                                ; Match UNITON's tone timing with equivalent delay
+81C7  16 06                     MVI     D, 6            ; same loop count
+81C9                    SILHC:
+                                ; Equivalent delay to tone half-cycle (no toggle)
+81C9  1E 32                     MVI     E, TONEDLY
+81CB  1D                SILDLY: DCR     E
+81CC  C2 CB81                   JNZ     SILDLY
+
+81CF  15                        DCR     D
+81D0  C2 C981                   JNZ     SILHC
+
+81D3  05                        DCR     B
+81D4  C2 C481                   JNZ     UOFFLP
+
+81D7  D1                        POP     D
+81D8  C1                        POP     B
+81D9  C9                        RET
+
+                        ; =============================================================
+                        ; SHOWLED - Display 28-bit tape across all 7 LED columns
+                        ;
+                        ; Tape bit-to-LED mapping (position 0 = bottom right):
+                        ;   Bits  3:0  -> Col 6  Status S3..S0 (bit-reversed for hw)
+                        ;   Bits  7:4  -> Col 4  Data D0..D3
+                        ;   Bits 11:8  -> Col 5  Data D4..D7
+                        ;   Bits 15:12 -> Col 2  Addr A0..A3
+                        ;   Bits 19:16 -> Col 3  Addr A4..A7
+                        ;   Bits 23:20 -> Col 0  Addr A8..A11
+                        ;   Bits 27:24 -> Col 1  Addr A12..A15
+                        ; =============================================================
+81DA                    SHOWLED:
+                                ; Col 6 (Status, bottom right) - bit-reversed
+81DA  3A B482                   LDA     TAPE
+81DD  E6 0F                     ANI     0FH
+81DF  21 A482                   LXI     H, REVTBL
+81E2  85                        ADD     L
+81E3  6F                        MOV     L, A
+81E4  7C                        MOV     A, H
+81E5  CE 00                     ACI     0
+81E7  67                        MOV     H, A
+81E8  7E                        MOV     A, M            ; reversed nibble
+81E9  F6 E0                     ORI     0E0H
+81EB  D3 C0                     OUT     OUTPORT
+
+                                ; Col 4 (D0-D3) - TAPE bits 7:4
+81ED  3A B482                   LDA     TAPE
+81F0  0F                        RRC
+81F1  0F                        RRC
+81F2  0F                        RRC
+81F3  0F                        RRC
+81F4  E6 0F                     ANI     0FH
+81F6  F6 C0                     ORI     0C0H
+81F8  D3 C0                     OUT     OUTPORT
+
+                                ; Col 5 (D4-D7) - TAPE+1 bits 3:0
+81FA  3A B582                   LDA     TAPE+1
+81FD  E6 0F                     ANI     0FH
+81FF  F6 D0                     ORI     0D0H
+8201  D3 C0                     OUT     OUTPORT
+
+                                ; Col 2 (A0-A3) - TAPE+1 bits 7:4
+8203  3A B582                   LDA     TAPE+1
+8206  0F                        RRC
+8207  0F                        RRC
+8208  0F                        RRC
+8209  0F                        RRC
+820A  E6 0F                     ANI     0FH
+820C  F6 A0                     ORI     0A0H
+820E  D3 C0                     OUT     OUTPORT
+
+                                ; Col 3 (A4-A7) - TAPE+2 bits 3:0
+8210  3A B682                   LDA     TAPE+2
+8213  E6 0F                     ANI     0FH
+8215  F6 B0                     ORI     0B0H
+8217  D3 C0                     OUT     OUTPORT
+
+                                ; Col 0 (A8-A11) - TAPE+2 bits 7:4
+8219  3A B682                   LDA     TAPE+2
+821C  0F                        RRC
+821D  0F                        RRC
+821E  0F                        RRC
+821F  0F                        RRC
+8220  E6 0F                     ANI     0FH
+8222  F6 80                     ORI     80H
+8224  D3 C0                     OUT     OUTPORT
+
+                                ; Col 1 (A12-A15) - TAPE+3 bits 3:0
+8226  3A B782                   LDA     TAPE+3
+8229  E6 0F                     ANI     0FH
+822B  F6 90                     ORI     90H
+822D  D3 C0                     OUT     OUTPORT
+
+                                ; Blank display so last column doesn't stay lit
+                                ; Use 80H (not 00H) to keep bit 7 / TX high
+822F  3E 80                     MVI     A, 80H
+8231  D3 C0                     OUT     OUTPORT
+
+8233  C9                        RET
+
+                        ; =============================================================
+                        ; DRAIN - Move all pending UART chars into type-ahead buffer
+                        ; =============================================================
+8234                    DRAIN:
+8234  CD 6F82                   CALL    KEYCHK
+8237  C8                        RZ                      ; nothing in UART
+8238  CD DE0B                   CALL    GETCHAR         ; A = char from ROM buffer
+                                ; Store in type-ahead buffer if room
+823B  E5                        PUSH    H
+823C  F5                        PUSH    PSW
+823D  3A D982                   LDA     TBCNT
+8240  FE 20                     CPI     TBUFSZ
+8242  D2 6A82                   JNC     DRFUL           ; buffer full, discard
+8245  F1                        POP     PSW
+8246  F5                        PUSH    PSW
+8247  21 B982                   LXI     H, TBUF
+824A  3A DA82                   LDA     TBWR
+824D  85                        ADD     L
+824E  6F                        MOV     L, A
+824F  7C                        MOV     A, H
+8250  CE 00                     ACI     0
+8252  67                        MOV     H, A
+8253  F1                        POP     PSW
+8254  77                        MOV     M, A            ; store char
+8255  F5                        PUSH    PSW
+8256  3A DA82                   LDA     TBWR
+8259  3C                        INR     A
+825A  FE 20                     CPI     TBUFSZ
+825C  DA 6082                   JC      DRNW
+825F  AF                        XRA     A
+8260  32 DA82           DRNW:   STA     TBWR
+8263  3A D982                   LDA     TBCNT
+8266  3C                        INR     A
+8267  32 D982                   STA     TBCNT
+826A  F1                DRFUL:  POP     PSW
+826B  E1                        POP     H
+826C  C3 3482                   JMP     DRAIN           ; check for more
+
+                        ; =============================================================
+                        ; KEYCHK - Test for keypress (Z = none, NZ = key waiting)
+                        ; =============================================================
+826F                    KEYCHK:
+826F  E5                        PUSH    H
+8270  2A 2EFF                   LHLD    RXBHEAD
+8273  EB                        XCHG
+8274  2A 30FF                   LHLD    RXBTAIL
+8277  7C                        MOV     A, H
+8278  BA                        CMP     D
+8279  C2 7E82                   JNZ     GKEY
+827C  7D                        MOV     A, L
+827D  BB                        CMP     E
+827E                    GKEY:
+827E  E1                        POP     H
+827F  C9                        RET
+
+                        ; =============================================================
+                        ; Morse code lookup tables (sentinel encoding)
+                        ; =============================================================
+8280                    MTBL_AZ:
+8280  05                        DB      05H             ; A  .-
+8281  18                        DB      18H             ; B  -...
+8282  1A                        DB      1AH             ; C  -.-.
+8283  0C                        DB      0CH             ; D  -..
+8284  02                        DB      02H             ; E  .
+8285  12                        DB      12H             ; F  ..-.
+8286  0E                        DB      0EH             ; G  --.
+8287  10                        DB      10H             ; H  ....
+8288  04                        DB      04H             ; I  ..
+8289  17                        DB      17H             ; J  .---
+828A  0D                        DB      0DH             ; K  -.-
+828B  14                        DB      14H             ; L  .-..
+828C  07                        DB      07H             ; M  --
+828D  06                        DB      06H             ; N  -.
+828E  0F                        DB      0FH             ; O  ---
+828F  16                        DB      16H             ; P  .--.
+8290  1D                        DB      1DH             ; Q  --.-
+8291  0A                        DB      0AH             ; R  .-.
+8292  08                        DB      08H             ; S  ...
+8293  03                        DB      03H             ; T  -
+8294  09                        DB      09H             ; U  ..-
+8295  11                        DB      11H             ; V  ...-
+8296  0B                        DB      0BH             ; W  .--
+8297  19                        DB      19H             ; X  -..-
+8298  1B                        DB      1BH             ; Y  -.--
+8299  1C                        DB      1CH             ; Z  --..
+
+829A                    MTBL_09:
+829A  3F                        DB      3FH             ; 0  -----
+829B  2F                        DB      2FH             ; 1  .----
+829C  27                        DB      27H             ; 2  ..---
+829D  23                        DB      23H             ; 3  ...--
+829E  21                        DB      21H             ; 4  ....-
+829F  20                        DB      20H             ; 5  .....
+82A0  30                        DB      30H             ; 6  -....
+82A1  38                        DB      38H             ; 7  --...
+82A2  3C                        DB      3CH             ; 8  ---..
+82A3  3E                        DB      3EH             ; 9  ----.
+
+                        ; 4-bit reversal table for status column hardware
+82A4                    REVTBL:
+82A4  0008040C 020A060E         DB      00H, 08H, 04H, 0CH, 02H, 0AH, 06H, 0EH
+82AC  0109050D 030B070F         DB      01H, 09H, 05H, 0DH, 03H, 0BH, 07H, 0FH
+
+                        ; =============================================================
+                        ; Variables
+                        ; =============================================================
+82B4   (0004)           TAPE:   DS      4               ; 28-bit shift register (LE)
+82B8  00                CASSOUT: DB     00H             ; cassette output state
+82B9   (0020)           TBUF:   DS      TBUFSZ          ; type-ahead circular buffer
+82D9  00                TBCNT:  DB      00H             ; chars in buffer
+82DA  00                TBWR:   DB      00H             ; write index
+82DB  00                TBRD:   DB      00H             ; read index
+82DC   (8000)                   END     START
+
+CASSETTE           0044 E  CASSIOFF           81B9    CASSOFF            81B9
+CASSOUT            82B8    DCLRLP             80F8    DOCLEAR            80F0
+DOMORSE            812C    DOSHIFT            8176    DOWORD             8105
+DRAIN              8234    DRFUL              826A    DRNW               8260
+DWLP               8107    EXIT               8114    FNDSEN             8130
+GETCHAR            0BDE E  GKEY               827E    GOTSEN             813D
+KEYCHK             826F    LOOKUP             80D3    MAIN               8064
+MAINMNU            015B E  MDASH              8153    MEGAP              8165
+MELM               8141    MRDONE             816F    MTBL_09            829A
+MTBL_AZ            8280    NOTLC              80B2    OUTPORT            00C0 E
+PRINTI             0BAF E  REVTBL             82A4    RXBHEAD            FF2E E
+RXBTAIL            FF30 E  SHIFT0             8175    SHIFT1             8171
+SHOWLED            81DA    SILDLY             81CB    SILHC              81C9
+SPEED              0028 E  START              8000    TAPE               82B4
+TBCNT              82D9    TBNW               808C    TBPOP              8074
+TBRD               82DB    TBUF               82B9    TBUFSZ             0020 E
+TBWR               82DA    TMRVAL             FF45 E  TONDLY             81AA
+TONEDLY            0032 E  TONLP              819E    TRYNUM             80C4
+UNITOFF            81C0    UNITON             8195    UOFFLP             81C4
+UONLP              8199

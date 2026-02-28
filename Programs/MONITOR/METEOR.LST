@@ -1,0 +1,279 @@
+                                ;=====================================================
+                        ; METEOR.ASM - Twin Shooting Stars
+                        ;
+                        ; Monitor program for the Altaid 8800.
+                        ; Load via ':' command, run with 'G 8000'.
+                        ;
+                        ; Two meteors race across all 28 front panel LEDs
+                        ; in opposite directions. Each has a bright head
+                        ; (all 4 bits lit) and a 3-step fading tail.
+                        ; Where they cross, patterns merge together.
+                        ;
+                        ; Meteor A sweeps right-to-left (address -> data).
+                        ; Meteor B sweeps left-to-right (data -> address).
+                        ;
+                        ; Status column uses reversed bit patterns to
+                        ; match its physical LED orientation.
+                        ;
+                        ; Press any key to exit.
+                        ;=====================================================
+
+8000                            ORG     8000H
+
+                        ;------------------------------------------------------
+                        ; System equates
+                        ;------------------------------------------------------
+      = 00C0            OUTPORT EQU     0C0H
+      = 0046            TIMER   EQU     046H
+      = FF45            TIMERV  EQU     0FF45H
+      = FF2E            RXBHEAD EQU     0FF2EH
+      = FF30            RXBTAIL EQU     0FF30H
+      = 0BAF            PRINTI  EQU     0BAFH
+      = 015B            MAINMNU EQU     015BH
+      = 0BDE            GETCHAR EQU     0BDEH
+      = 0007            NUMCOLS EQU     7
+      = 0007            NUMPOS  EQU     7
+
+                        ;======================================================
+8000                    START:
+                                ; --- Save & stop timer ---
+8000  3A 45FF                   LDA     TIMERV
+8003  32 2E81                   STA     SAVTMR
+8006  AF                        XRA     A
+8007  32 45FF                   STA     TIMERV
+800A  D3 46                     OUT     TIMER
+
+                                ; --- Banner ---
+800C  CD AF0B                   CALL    PRINTI
+800F  0D0A                      DB      0DH, 0AH
+8011  4D455445 4F52202D         DB      'METEOR - Twin Shooting Stars'
+8019  20547769 6E205368
+8021  6F6F7469 6E672053
+8029  74617273
+802D  0D0A                      DB      0DH, 0AH
+802F  4553433D 65786974         DB      'ESC=exit'
+8037  0D0A00                    DB      0DH, 0AH, 00H
+
+                                ; --- Init meteor positions ---
+803A  AF                        XRA     A
+803B  32 2F81                   STA     HEAD_A          ; A starts at position 0
+803E  3E 04                     MVI     A, 4
+8040  32 3081                   STA     HEAD_B          ; B starts offset at 4
+
+                        ;======================================================
+                        ; MAIN LOOP
+                        ;======================================================
+8043                    MAINLP:
+                                ; --- Clear all column data ---
+8043  21 3181                   LXI     H, COLDATA
+8046  06 07                     MVI     B, NUMCOLS
+8048  36 00             CLRLP:  MVI     M, 00H
+804A  23                        INX     H
+804B  05                        DCR     B
+804C  C2 4880                   JNZ     CLRLP
+
+                                ;--- Meteor A (sweeps right->left) ---
+                                ;    Trail behind = DEC positions
+804F  3A 2F81                   LDA     HEAD_A
+8052  5F                        MOV     E, A
+8053  3E 00                     MVI     A, 0            ; head segment
+8055  CD FB80                   CALL    SETONE
+8058  CD 1E81                   CALL    DEC_E
+805B  3E 01                     MVI     A, 1            ; tail 1
+805D  CD FB80                   CALL    SETONE
+8060  CD 1E81                   CALL    DEC_E
+8063  3E 02                     MVI     A, 2            ; tail 2
+8065  CD FB80                   CALL    SETONE
+8068  CD 1E81                   CALL    DEC_E
+806B  3E 03                     MVI     A, 3            ; tail 3
+806D  CD FB80                   CALL    SETONE
+
+                                ;--- Meteor B (sweeps left->right) ---
+                                ;    Trail behind = INC positions
+8070  3A 3081                   LDA     HEAD_B
+8073  5F                        MOV     E, A
+8074  3E 00                     MVI     A, 0            ; head segment
+8076  CD FB80                   CALL    SETONE
+8079  CD 2681                   CALL    INC_E
+807C  3E 01                     MVI     A, 1            ; tail 1
+807E  CD FB80                   CALL    SETONE
+8081  CD 2681                   CALL    INC_E
+8084  3E 02                     MVI     A, 2            ; tail 2
+8086  CD FB80                   CALL    SETONE
+8089  CD 2681                   CALL    INC_E
+808C  3E 03                     MVI     A, 3            ; tail 3
+808E  CD FB80                   CALL    SETONE
+
+                        ;======================================================
+                        ; SCAN - multiplex all 7 columns for POV
+                        ;======================================================
+8091  16 20                     MVI     D, 20H          ; 32 scan cycles per step
+
+8093                    SCANLP:
+8093  21 3181                   LXI     H, COLDATA
+8096  1E 80                     MVI     E, 80H          ; column 0 prefix
+8098  06 07                     MVI     B, NUMCOLS
+
+809A                    SCNCOL:
+809A  7E                        MOV     A, M
+809B  B3                        ORA     E               ; merge prefix + TX idle
+809C  D3 C0                     OUT     OUTPORT
+
+809E  0E 80                     MVI     C, 80H          ; 128-iteration delay
+80A0  0D                COLDLY: DCR     C
+80A1  C2 A080                   JNZ     COLDLY
+
+80A4  23                        INX     H
+80A5  7B                        MOV     A, E
+80A6  C6 10                     ADI     10H
+80A8  5F                        MOV     E, A
+
+80A9  05                        DCR     B
+80AA  C2 9A80                   JNZ     SCNCOL
+
+80AD  15                        DCR     D
+80AE  C2 9380                   JNZ     SCANLP
+
+                                ;--- Advance meteor A (increment position) ---
+80B1  3A 2F81                   LDA     HEAD_A
+80B4  3C                        INR     A
+80B5  FE 07                     CPI     NUMPOS
+80B7  C2 BB80                   JNZ     NWA
+80BA  AF                        XRA     A
+80BB  32 2F81           NWA:    STA     HEAD_A
+
+                                ;--- Advance meteor B (decrement position) ---
+80BE  3A 3081                   LDA     HEAD_B
+80C1  3D                        DCR     A
+80C2  F2 C780                   JP      NWB
+80C5  3E 06                     MVI     A, NUMPOS-1
+80C7  32 3081           NWB:    STA     HEAD_B
+
+                                ;--- Check UART for keypress ---
+80CA  3A 2EFF                   LDA     RXBHEAD
+80CD  21 30FF                   LXI     H, RXBTAIL
+80D0  96                        SUB     M
+80D1  CA 4380                   JZ      MAINLP
+
+                                ; Read key - only ESC exits
+80D4  CD DE0B                   CALL    GETCHAR
+80D7  FE 1B                     CPI     1BH
+80D9  C2 4380                   JNZ     MAINLP
+
+                                ;=== EXIT ===
+
+                                ; Blank all LED columns
+80DC  3E 80                     MVI     A, 80H
+80DE  D3 C0             BLNKLP: OUT     OUTPORT
+80E0  C6 10                     ADI     10H
+80E2  D2 DE80                   JNC     BLNKLP
+
+                                ; Restore timer
+80E5  3A 2E81                   LDA     SAVTMR
+80E8  32 45FF                   STA     TIMERV
+80EB  D3 46                     OUT     TIMER
+
+80ED  CD AF0B                   CALL    PRINTI
+80F0  446F6E65 2E0D0A00         DB      'Done.', 0DH, 0AH, 00H
+
+80F8  C3 5B01                   JMP     MAINMNU
+
+                        ;======================================================
+                        ; SETONE - Set one trail segment into COLDATA
+                        ;   E = logical sweep position (0-6)
+                        ;   A = trail index (0=head, 1-3=tail)
+                        ;   ORs pattern into COLDATA[physical_column]
+                        ;======================================================
+80FB                    SETONE:
+80FB  F5                        PUSH    PSW
+                                ; Get physical column from COLORDER[E]
+80FC  21 3881                   LXI     H, COLORDER
+80FF  7B                        MOV     A, E
+8100  85                        ADD     L
+8101  6F                        MOV     L, A
+8102  4E                        MOV     C, M            ; C = physical column
+
+8103  F1                        POP     PSW             ; A = trail index
+
+                                ; If status column (6), use reversed patterns
+8104  57                        MOV     D, A            ; save trail index
+8105  79                        MOV     A, C
+8106  FE 06                     CPI     06H
+8108  7A                        MOV     A, D            ; restore trail index
+8109  C2 0E81                   JNZ     SO_NORM
+810C  C6 04                     ADI     04H             ; offset to reversed table
+810E                    SO_NORM:
+                                ; Look up trail pattern
+810E  21 3F81                   LXI     H, TRLTBL
+8111  85                        ADD     L
+8112  6F                        MOV     L, A
+8113  56                        MOV     D, M            ; D = pattern
+
+                                ; COLDATA[C] |= D
+8114  21 3181                   LXI     H, COLDATA
+8117  79                        MOV     A, C
+8118  85                        ADD     L
+8119  6F                        MOV     L, A
+811A  7E                        MOV     A, M
+811B  B2                        ORA     D
+811C  77                        MOV     M, A
+811D  C9                        RET
+
+                        ;======================================================
+                        ; DEC_E / INC_E - adjust position with mod-7 wrap
+                        ;======================================================
+811E                    DEC_E:
+811E  1D                        DCR     E
+811F  7B                        MOV     A, E
+8120  FE FF                     CPI     0FFH
+8122  C0                        RNZ
+8123  1E 06                     MVI     E, 6
+8125  C9                        RET
+
+8126                    INC_E:
+8126  1C                        INR     E
+8127  7B                        MOV     A, E
+8128  FE 07                     CPI     NUMPOS
+812A  C0                        RNZ
+812B  1E 00                     MVI     E, 0
+812D  C9                        RET
+
+                        ;------------------------------------------------------
+                        ; Data
+                        ;------------------------------------------------------
+812E  00                SAVTMR: DB      00H
+812F  00                HEAD_A: DB      00H
+8130  00                HEAD_B: DB      00H
+
+                        ; Column data bytes (indexed 0-6 = physical columns 0-6)
+8131                    COLDATA:
+8131  00000000 000000           DB      00H, 00H, 00H, 00H, 00H, 00H, 00H
+
+                        ; Sweep order: right-to-left across the panel
+                        ; Address -> Status -> Data
+8138                    COLORDER:
+8138  02030001 060405           DB      02H, 03H, 00H, 01H, 06H, 04H, 05H
+
+                        ; Trail brightness patterns
+                        ; Normal (address/data): fills bit 0 up
+813F                    TRLTBL:
+813F  0F                        DB      0FH             ; head: ****
+8140  07                        DB      07H             ; tail 1: ***-
+8141  03                        DB      03H             ; tail 2: **--
+8142  01                        DB      01H             ; tail 3: *---
+                        ; Reversed (status): fills bit 3 down
+8143  0F                        DB      0FH             ; head: ****
+8144  0E                        DB      0EH             ; tail 1: -***
+8145  0C                        DB      0CH             ; tail 2: --**
+8146  08                        DB      08H             ; tail 3: ---*
+
+BLNKLP             80DE    CLRLP              8048    COLDATA            8131
+COLDLY             80A0    COLORDER           8138    DEC_E              811E
+GETCHAR            0BDE E  HEAD_A             812F    HEAD_B             8130
+INC_E              8126    MAINLP             8043    MAINMNU            015B E
+NUMCOLS            0007 E  NUMPOS             0007 E  NWA                80BB
+NWB                80C7    OUTPORT            00C0 E  PRINTI             0BAF E
+RXBHEAD            FF2E E  RXBTAIL            FF30 E  SAVTMR             812E
+SCANLP             8093    SCNCOL             809A    SETONE             80FB
+SO_NORM            810E    START              8000    TIMER              0046 E
+TIMERV             FF45 E  TRLTBL             813F

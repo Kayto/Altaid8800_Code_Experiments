@@ -1,0 +1,404 @@
+                        ; =============================================================
+                        ; MORSE2.ASM - Compact Morse Code Tape Reader
+                        ; =============================================================
+                        ; Monitor program for Altaid 8800 -- load at 8000H via ':'
+                        ;
+                        ; Like MORSE but more compact: dots are 1 LED wide, dashes
+                        ; are 2 LEDs wide (instead of standard 1:3 ratio).  This makes
+                        ; the scrolling display denser so more of the message is visible
+                        ; at once across the 28 LEDs.  MORSE.ASM uses the standard 3-LED
+                        ; dash for strict Morse compliance; MORSE2 and MORSE3 trade that
+                        ; for readability on a small display.
+                        ;
+                        ;   Dot   = 1 LED on
+                        ;   Dash  = 2 LEDs on (adjacent)
+                        ;   Gap between elements = 1 LED off
+                        ;   Gap between letters  = 3 LEDs off
+                        ;   Gap between words    = 7 LEDs off
+                        ;
+                        ; Example SOS:  *-*-*---**-**-**---*-*-*
+                        ;   * = lit LED  - = off LED
+                        ;
+                        ; Single 28-bit shift register scrolls across all LEDs:
+                        ;   Top row:    Address A15..A0  (16 LEDs)
+                        ;   Bottom row: Data D7..D0 + Status S3..S0  (12 LEDs)
+                        ;
+                        ; Supports A-Z, 0-9 and space.  Press ESC to exit.
+                        ; =============================================================
+
+8000                            ORG     8000H
+
+                        ; --- ROM entry points ---
+      = 0BAF            PRINTI  EQU     0BAFH
+      = 0BDE            GETCHAR EQU     0BDEH
+      = 015B            MAINMNU EQU     015BH
+
+                        ; --- UART RX buffer pointers ---
+      = FF2E            RXBHEAD EQU     0FF2EH
+      = FF30            RXBTAIL EQU     0FF30H
+
+                        ; --- Timer ---
+      = FF45            TMRVAL  EQU     0FF45H
+
+                        ; =============================================================
+8000                    START:
+8000  AF                        XRA     A
+8001  D3 46                     OUT     46H             ; stop hardware timer
+
+8003  CD AF0B                   CALL    PRINTI
+8006  0D0A                      DB      0DH, 0AH
+8008  4D4F5253 4532202D         DB      'MORSE2 - Compact Tape Reader'
+8010  20436F6D 70616374
+8018  20546170 65205265
+8020  61646572
+8024  0D0A                      DB      0DH, 0AH
+8026  54797065 20746F20         DB      'Type to see Morse on LEDs. ESC=exit'
+802E  73656520 4D6F7273
+8036  65206F6E 204C4544
+803E  732E2045 53433D65
+8046  786974
+8049  0D0A00                    DB      0DH, 0AH, 0
+
+                                ; Clear shift register
+804C  AF                        XRA     A
+804D  32 EE81                   STA     TAPE
+8050  32 EF81                   STA     TAPE+1
+8053  32 F081                   STA     TAPE+2
+8056  32 F181                   STA     TAPE+3
+
+                        ; -------------------------------------------------------------
+                        ; Main loop - refresh LEDs while waiting for input
+                        ; -------------------------------------------------------------
+8059                    MAIN:
+8059  CD 5381                   CALL    SHOWLED
+805C  CD A981                   CALL    KEYCHK
+805F  CA 5980                   JZ      MAIN
+
+8062  CD DE0B                   CALL    GETCHAR
+
+8065  FE 1B                     CPI     1BH             ; ESC
+8067  CA C880                   JZ      EXIT
+
+806A  FE 20                     CPI     20H             ; space
+806C  CA B980                   JZ      DOWORD
+
+                                ; Lowercase to uppercase
+806F  FE 61                     CPI     'a'
+8071  DA 7B80                   JC      NOTLC
+8074  FE 7B                     CPI     'z'+1
+8076  D2 7B80                   JNC     NOTLC
+8079  D6 20                     SUI     20H
+807B                    NOTLC:
+                                ; A-Z lookup
+807B  FE 41                     CPI     'A'
+807D  DA 8D80                   JC      TRYNUM
+8080  FE 5B                     CPI     'Z'+1
+8082  D2 5980                   JNC     MAIN
+8085  D6 41                     SUI     'A'
+8087  21 BA81                   LXI     H, MTBL_AZ
+808A  C3 9C80                   JMP     LOOKUP
+
+808D                    TRYNUM:
+808D  FE 30                     CPI     '0'
+808F  DA 5980                   JC      MAIN
+8092  FE 3A                     CPI     '9'+1
+8094  D2 5980                   JNC     MAIN
+8097  D6 30                     SUI     '0'
+8099  21 D481                   LXI     H, MTBL_09
+
+809C                    LOOKUP:
+809C  85                        ADD     L
+809D  6F                        MOV     L, A
+809E  7C                        MOV     A, H
+809F  CE 00                     ACI     0
+80A1  67                        MOV     H, A
+80A2  7E                        MOV     A, M            ; Morse byte (sentinel encoded)
+80A3  B7                        ORA     A
+80A4  CA 5980                   JZ      MAIN
+
+80A7  CD DD80                   CALL    DOMORSE
+
+                                ; Inter-letter gap: 2 more off (1 from DOMORSE trail)
+80AA  CD 1D81                   CALL    SHIFT0
+80AD  CD 3D81                   CALL    UNITDLY
+80B0  CD 1D81                   CALL    SHIFT0
+80B3  CD 3D81                   CALL    UNITDLY
+
+80B6  C3 5980                   JMP     MAIN
+
+                        ; -------------------------------------------------------------
+                        ; Word space: 7 off-units total (3 already from inter-letter)
+                        ; -------------------------------------------------------------
+80B9                    DOWORD:
+80B9  0E 04                     MVI     C, 4
+80BB                    DWLP:
+80BB  CD 1D81                   CALL    SHIFT0
+80BE  CD 3D81                   CALL    UNITDLY
+80C1  0D                        DCR     C
+80C2  C2 BB80                   JNZ     DWLP
+80C5  C3 5980                   JMP     MAIN
+
+                        ; -------------------------------------------------------------
+80C8                    EXIT:
+80C8  3A 45FF                   LDA     TMRVAL
+80CB  D3 46                     OUT     46H
+80CD  CD AF0B                   CALL    PRINTI
+80D0  0D0A                      DB      0DH, 0AH
+80D2  446F6E65 2E               DB      'Done.'
+80D7  0D0A00                    DB      0DH, 0AH, 0
+80DA  C3 5B01                   JMP     MAINMNU
+
+                        ; =============================================================
+                        ; DOMORSE - Decode sentinel byte and shift elements
+                        ;   Dot  = 1 on-bit  + 1 off-bit
+                        ;   Dash = 2 on-bits + 1 off-bit
+                        ; =============================================================
+80DD                    DOMORSE:
+80DD  C5                        PUSH    B
+80DE  47                        MOV     B, A
+80DF  0E 08                     MVI     C, 8
+
+                                ; Find sentinel (left-justify)
+80E1                    FNDSEN:
+80E1  78                        MOV     A, B
+80E2  87                        ADD     A
+80E3  47                        MOV     B, A
+80E4  DA EE80                   JC      GOTSEN
+80E7  0D                        DCR     C
+80E8  C2 E180                   JNZ     FNDSEN
+80EB  C3 1781                   JMP     MRDONE
+
+80EE                    GOTSEN:
+80EE  0D                        DCR     C
+80EF  CA 1781                   JZ      MRDONE
+
+80F2                    MELM:
+80F2  78                        MOV     A, B
+80F3  87                        ADD     A               ; next element -> CY
+80F4  47                        MOV     B, A
+80F5  DA 0181                   JC      MDASH
+
+                                ; Dot: 1 on-bit
+80F8  CD 1981                   CALL    SHIFT1
+80FB  CD 3D81                   CALL    UNITDLY
+80FE  C3 0D81                   JMP     MEGAP
+
+8101                    MDASH:
+                                ; Dash: 2 on-bits
+8101  CD 1981                   CALL    SHIFT1
+8104  CD 3D81                   CALL    UNITDLY
+8107  CD 1981                   CALL    SHIFT1
+810A  CD 3D81                   CALL    UNITDLY
+
+810D                    MEGAP:
+                                ; Inter-element gap: 1 off-bit
+810D  CD 1D81                   CALL    SHIFT0
+8110  CD 3D81                   CALL    UNITDLY
+
+8113  0D                        DCR     C
+8114  C2 F280                   JNZ     MELM
+
+8117                    MRDONE:
+8117  C1                        POP     B
+8118  C9                        RET
+
+                        ; =============================================================
+                        ; SHIFT1 / SHIFT0 - Shift a bit into the 28-bit tape register
+                        ; =============================================================
+8119                    SHIFT1:
+8119  37                        STC
+811A  C3 1E81                   JMP     DOSHIFT
+
+811D                    SHIFT0:
+811D  B7                        ORA     A               ; CY = 0
+
+811E                    DOSHIFT:
+811E  3A EE81                   LDA     TAPE
+8121  17                        RAL
+8122  32 EE81                   STA     TAPE
+8125  3A EF81                   LDA     TAPE+1
+8128  17                        RAL
+8129  32 EF81                   STA     TAPE+1
+812C  3A F081                   LDA     TAPE+2
+812F  17                        RAL
+8130  32 F081                   STA     TAPE+2
+8133  3A F181                   LDA     TAPE+3
+8136  17                        RAL
+8137  E6 0F                     ANI     0FH
+8139  32 F181                   STA     TAPE+3
+813C  C9                        RET
+
+                        ; =============================================================
+                        ; UNITDLY - One time unit with active LED refresh
+                        ; =============================================================
+813D                    UNITDLY:
+813D  C5                        PUSH    B
+813E  D5                        PUSH    D
+                                ; TIMING: B = refresh count (speed), D = inner pause (brightness)
+                                ; Increase B to slow down. Keep D >= 60 for flicker-free.
+813F  06 50                     MVI     B, 80           ; refresh iterations  (speed)
+8141  16 64                     MVI     D, 100          ; inner pause per refresh (brightness)
+8143                    UDLP:
+8143  CD 5381                   CALL    SHOWLED
+8146  D5                        PUSH    D
+8147                    UDPAUSE:
+8147  15                        DCR     D
+8148  C2 4781                   JNZ     UDPAUSE
+814B  D1                        POP     D
+814C  05                        DCR     B
+814D  C2 4381                   JNZ     UDLP
+8150  D1                        POP     D
+8151  C1                        POP     B
+8152  C9                        RET
+
+                        ; =============================================================
+                        ; SHOWLED - Display 28-bit tape across all 7 LED columns
+                        ; =============================================================
+8153                    SHOWLED:
+                                ; Col 6 (Status, bottom right) - bit-reversed
+8153  3A EE81                   LDA     TAPE
+8156  E6 0F                     ANI     0FH
+8158  21 DE81                   LXI     H, REVTBL
+815B  85                        ADD     L
+815C  6F                        MOV     L, A
+815D  7C                        MOV     A, H
+815E  CE 00                     ACI     0
+8160  67                        MOV     H, A
+8161  7E                        MOV     A, M
+8162  F6 E0                     ORI     0E0H
+8164  D3 C0                     OUT     0C0H
+
+                                ; Col 4 (D0-D3) - TAPE bits 7:4
+8166  3A EE81                   LDA     TAPE
+8169  0F                        RRC
+816A  0F                        RRC
+816B  0F                        RRC
+816C  0F                        RRC
+816D  E6 0F                     ANI     0FH
+816F  F6 C0                     ORI     0C0H
+8171  D3 C0                     OUT     0C0H
+
+                                ; Col 5 (D4-D7) - TAPE+1 bits 3:0
+8173  3A EF81                   LDA     TAPE+1
+8176  E6 0F                     ANI     0FH
+8178  F6 D0                     ORI     0D0H
+817A  D3 C0                     OUT     0C0H
+
+                                ; Col 2 (A0-A3) - TAPE+1 bits 7:4
+817C  3A EF81                   LDA     TAPE+1
+817F  0F                        RRC
+8180  0F                        RRC
+8181  0F                        RRC
+8182  0F                        RRC
+8183  E6 0F                     ANI     0FH
+8185  F6 A0                     ORI     0A0H
+8187  D3 C0                     OUT     0C0H
+
+                                ; Col 3 (A4-A7) - TAPE+2 bits 3:0
+8189  3A F081                   LDA     TAPE+2
+818C  E6 0F                     ANI     0FH
+818E  F6 B0                     ORI     0B0H
+8190  D3 C0                     OUT     0C0H
+
+                                ; Col 0 (A8-A11) - TAPE+2 bits 7:4
+8192  3A F081                   LDA     TAPE+2
+8195  0F                        RRC
+8196  0F                        RRC
+8197  0F                        RRC
+8198  0F                        RRC
+8199  E6 0F                     ANI     0FH
+819B  F6 80                     ORI     80H
+819D  D3 C0                     OUT     0C0H
+
+                                ; Col 1 (A12-A15) - TAPE+3 bits 3:0
+819F  3A F181                   LDA     TAPE+3
+81A2  E6 0F                     ANI     0FH
+81A4  F6 90                     ORI     90H
+81A6  D3 C0                     OUT     0C0H
+
+81A8  C9                        RET
+
+                        ; =============================================================
+                        ; KEYCHK - Test for keypress (Z = none, NZ = key waiting)
+                        ; =============================================================
+81A9                    KEYCHK:
+81A9  E5                        PUSH    H
+81AA  2A 2EFF                   LHLD    RXBHEAD
+81AD  EB                        XCHG
+81AE  2A 30FF                   LHLD    RXBTAIL
+81B1  7C                        MOV     A, H
+81B2  BA                        CMP     D
+81B3  C2 B881                   JNZ     GOTKEY
+81B6  7D                        MOV     A, L
+81B7  BB                        CMP     E
+81B8                    GOTKEY:
+81B8  E1                        POP     H
+81B9  C9                        RET
+
+                        ; =============================================================
+                        ; Morse tables (sentinel encoding)
+                        ; =============================================================
+81BA                    MTBL_AZ:
+81BA  05                        DB      05H             ; A  .-
+81BB  18                        DB      18H             ; B  -...
+81BC  1A                        DB      1AH             ; C  -.-.
+81BD  0C                        DB      0CH             ; D  -..
+81BE  02                        DB      02H             ; E  .
+81BF  12                        DB      12H             ; F  ..-.
+81C0  0E                        DB      0EH             ; G  --.
+81C1  10                        DB      10H             ; H  ....
+81C2  04                        DB      04H             ; I  ..
+81C3  17                        DB      17H             ; J  .---
+81C4  0D                        DB      0DH             ; K  -.-
+81C5  14                        DB      14H             ; L  .-..
+81C6  07                        DB      07H             ; M  --
+81C7  06                        DB      06H             ; N  -.
+81C8  0F                        DB      0FH             ; O  ---
+81C9  16                        DB      16H             ; P  .--.
+81CA  1D                        DB      1DH             ; Q  --.-
+81CB  0A                        DB      0AH             ; R  .-.
+81CC  08                        DB      08H             ; S  ...
+81CD  03                        DB      03H             ; T  -
+81CE  09                        DB      09H             ; U  ..-
+81CF  11                        DB      11H             ; V  ...-
+81D0  0B                        DB      0BH             ; W  .--
+81D1  19                        DB      19H             ; X  -..-
+81D2  1B                        DB      1BH             ; Y  -.--
+81D3  1C                        DB      1CH             ; Z  --..
+
+81D4                    MTBL_09:
+81D4  3F                        DB      3FH             ; 0  -----
+81D5  2F                        DB      2FH             ; 1  .----
+81D6  27                        DB      27H             ; 2  ..---
+81D7  23                        DB      23H             ; 3  ...--
+81D8  21                        DB      21H             ; 4  ....-
+81D9  20                        DB      20H             ; 5  .....
+81DA  30                        DB      30H             ; 6  -....
+81DB  38                        DB      38H             ; 7  --...
+81DC  3C                        DB      3CH             ; 8  ---..
+81DD  3E                        DB      3EH             ; 9  ----.
+
+                        ; 4-bit reversal table for status column hardware
+81DE                    REVTBL:
+81DE  0008040C 020A060E         DB      00H, 08H, 04H, 0CH, 02H, 0AH, 06H, 0EH
+81E6  0109050D 030B070F         DB      01H, 09H, 05H, 0DH, 03H, 0BH, 07H, 0FH
+
+                        ; =============================================================
+                        ; Variables
+                        ; =============================================================
+81EE   (0004)           TAPE:   DS      4               ; 28-bit shift register (LE)
+
+81F2   (8000)                   END     START
+
+DOMORSE            80DD    DOSHIFT            811E    DOWORD             80B9
+DWLP               80BB    EXIT               80C8    FNDSEN             80E1
+GETCHAR            0BDE E  GOTKEY             81B8    GOTSEN             80EE
+KEYCHK             81A9    LOOKUP             809C    MAIN               8059
+MAINMNU            015B E  MDASH              8101    MEGAP              810D
+MELM               80F2    MRDONE             8117    MTBL_09            81D4
+MTBL_AZ            81BA    NOTLC              807B    PRINTI             0BAF E
+REVTBL             81DE    RXBHEAD            FF2E E  RXBTAIL            FF30 E
+SHIFT0             811D    SHIFT1             8119    SHOWLED            8153
+START              8000    TAPE               81EE    TMRVAL             FF45 E
+TRYNUM             808D    UDLP               8143    UDPAUSE            8147
+UNITDLY            813D

@@ -1,0 +1,363 @@
+                        ;=====================================================
+                        ; CASSTEST.ASM - Cassette Port Test
+                        ;
+                        ; Monitor program for the Altaid 8800.
+                        ; Load via the : (Intel HEX) command, run with G 8000.
+                        ;
+                        ; Tests the cassette output port (44H) by toggling it
+                        ; to produce square-wave tones.  Connect a small
+                        ; speaker or buzzer to the cassette output to hear
+                        ; the output.
+                        ;
+                        ; No LEDs are driven - this keeps the tone generation
+                        ; loop tight and free of timing artifacts.
+                        ;
+                        ; Controls via serial terminal:
+                        ;   1-8   Select tone frequency (1=lowest, 8=highest)
+                        ;   S     Sweep mode - auto-sweep through all tones
+                        ;   SPACE Silence (stop tone)
+                        ;   ESC   Exit to monitor
+                        ;
+                        ; Port 44H is a simple output latch.  Writing 1 or 0
+                        ; sets the cassette output line high or low.  Toggling
+                        ; it at different rates creates different frequencies.
+                        ;
+                        ; Timer ISR must be stopped to prevent C0H conflicts.
+                        ; UART RX buffer is checked directly for commands.
+                        ;
+                        ; Assemble: asmx -C 8080 -e -w -o CASSTEST.hex CASSTEST.ASM
+                        ;=====================================================
+
+8000                            ORG     8000H
+
+                        ;------------------------------------------------------
+                        ; ROM / hardware equates
+                        ;------------------------------------------------------
+      = 0BAF            PRINTI      EQU 0BAFH       ; Print inline null-terminated string
+      = 015B            MAIN_MENU   EQU 015BH       ; Monitor main menu entry
+      = 00C0            OUTPORT     EQU 0C0H        ; LED + TX output port
+      = 0044            CASSETTE    EQU 044H        ; Cassette output port
+      = 0046            TIMER       EQU 046H        ; Timer control port
+      = FF45            TIMERV      EQU 0FF45H      ; TIMER_RUN variable in RAM
+      = FF2E            RXBHEAD     EQU 0FF2EH      ; UART RX buffer head pointer
+      = FF30            RXBTAIL     EQU 0FF30H      ; UART RX buffer tail pointer
+      = 0BDE            GETCHAR     EQU 0BDEH       ; ROM blocking char read
+
+                        ;======================================================
+8000                    START:
+                                ; --- Print banner ---
+8000  CD AF0B                   CALL    PRINTI
+8003  0D0A                      DB      0DH,0AH
+8005  43415353 54455354         DB      'CASSTEST - Cassette Port Test',0DH,0AH
+800D  202D2043 61737365
+8015  74746520 506F7274
+801D  20546573 740D0A
+8024  312D383D 746F6E65         DB      '1-8=tone  S=sweep  SPACE=off  ESC=exit'
+802C  2020533D 73776565
+8034  70202053 50414345
+803C  3D6F6666 20204553
+8044  433D6578 6974
+804A  0D0A00                    DB      0DH,0AH,0
+
+                                ; --- Save and stop timer ---
+804D  3A 45FF                   LDA     TIMERV
+8050  32 E181                   STA     SAVTMR
+8053  AF                        XRA     A
+8054  32 45FF                   STA     TIMERV
+8057  D3 46                     OUT     TIMER
+
+                                ; --- Init state ---
+8059  3E 04                     MVI     A,04H           ; start with mid-range tone
+805B  32 DA81                   STA     TONEIDX
+805E  AF                        XRA     A
+805F  32 DC81                   STA     SWEEP           ; sweep mode off
+8062  32 DB81                   STA     CASSOUT         ; cassette output state
+8065  32 DD81                   STA     SWPDIR          ; sweep direction (0=up)
+
+                                ; --- Announce initial tone ---
+8068  CD AF0B                   CALL    PRINTI
+806B  546F6E65 3A20340D         DB      'Tone: 4',0DH,0AH,0
+8073  0A00
+
+                        ;------------------------------------------------------
+                        ; Main loop
+                        ;------------------------------------------------------
+8075                    MAINLP:
+                                ; --- Check for serial keypress ---
+8075  3A 2EFF                   LDA     RXBHEAD
+8078  21 30FF                   LXI     H,RXBTAIL
+807B  96                        SUB     M
+807C  CA C180                   JZ      NOKEY
+
+                                ; Key available - read it
+807F  CD DE0B                   CALL    GETCHAR
+
+                                ; ESC = exit
+8082  FE 1B                     CPI     1BH
+8084  CA B781                   JZ      EXIT
+
+                                ; SPACE = silence
+8087  FE 20                     CPI     20H
+8089  CA 6181                   JZ      SILENCE
+
+                                ; 'S' or 's' = sweep mode toggle
+808C  FE 53                     CPI     'S'
+808E  CA 7981                   JZ      SETSWEEP
+8091  FE 73                     CPI     's'
+8093  CA 7981                   JZ      SETSWEEP
+
+                                ; '1'-'8' = select tone
+8096  FE 31                     CPI     '1'
+8098  DA C180                   JC      NOKEY           ; below '1', ignore
+809B  FE 39                     CPI     '9'
+809D  D2 C180                   JNC     NOKEY           ; above '8', ignore
+
+                                ; Convert ASCII '1'-'8' to index 1-8
+80A0  D6 30                     SUI     '0'
+80A2  32 DA81                   STA     TONEIDX
+
+                                ; Turn off sweep when manually selecting
+80A5  AF                        XRA     A
+80A6  32 DC81                   STA     SWEEP
+
+                                ; Print selected tone
+80A9  CD AF0B                   CALL    PRINTI
+80AC  546F6E65 3A2000           DB      'Tone: ',0
+80B3  3A DA81                   LDA     TONEIDX
+80B6  C6 30                     ADI     '0'
+80B8  CD F60B                   CALL    PUTCH
+80BB  CD AF0B                   CALL    PRINTI
+80BE  0D0A00                    DB      0DH,0AH,0
+
+80C1                    NOKEY:
+
+                        ;------------------------------------------------------
+                        ; Generate tone: fully self-contained loop.
+                        ; Sweep uses a 16-bit countdown timer decremented by
+                        ; the tone delay value each half-cycle, so every tone
+                        ; holds for the same wall-clock duration.
+                        ;------------------------------------------------------
+80C1                    DOTONE:
+80C1  3A DA81                   LDA     TONEIDX
+80C4  B7                        ORA     A
+80C5  CA 5281                   JZ      DOSILENCE       ; index 0 = silence
+
+                                ; --- Look up half-period delay from table ---
+80C8  CD 4281                   CALL    LOADTONE        ; sets CURDELAY from TONEIDX
+
+                                ; --- Continuous tone loop ---
+80CB                    TONELP:
+                                ; Toggle cassette output
+80CB  3A DB81                   LDA     CASSOUT
+80CE  EE 01                     XRI     01H
+80D0  32 DB81                   STA     CASSOUT
+80D3  D3 44                     OUT     CASSETTE
+
+                                ; Half-period delay
+80D5  3A E081                   LDA     CURDELAY
+80D8  47                        MOV     B,A
+80D9  05                HDLY:   DCR     B
+80DA  C2 D980                   JNZ     HDLY
+
+                                ; Check for keypress
+80DD  3A 2EFF                   LDA     RXBHEAD
+80E0  21 30FF                   LXI     H,RXBTAIL
+80E3  96                        SUB     M
+80E4  C2 7580                   JNZ     MAINLP          ; key pressed - go handle it
+
+                                ; --- Sweep timer ---
+80E7  3A DC81                   LDA     SWEEP
+80EA  B7                        ORA     A
+80EB  CA CB80                   JZ      TONELP          ; not sweeping
+
+                                ; Subtract CURDELAY from 16-bit sweep timer
+80EE  3A E081                   LDA     CURDELAY
+80F1  47                        MOV     B,A
+80F2  2A DE81                   LHLD    SWPTMR
+80F5  7D                        MOV     A,L
+80F6  90                        SUB     B
+80F7  6F                        MOV     L,A
+80F8  7C                        MOV     A,H
+80F9  DE 00                     SBI     0
+80FB  67                        MOV     H,A
+80FC  22 DE81                   SHLD    SWPTMR
+80FF  D2 CB80                   JNC     TONELP          ; timer not expired
+
+                                ; --- Timer expired: advance to next tone ---
+8102  21 3075                   LXI     H,SWPTIME
+8105  22 DE81                   SHLD    SWPTMR          ; reload timer
+
+8108  3A DD81                   LDA     SWPDIR
+810B  B7                        ORA     A
+810C  C2 2881                   JNZ     SWPDN
+
+                                ; Sweeping up
+810F  3A DA81                   LDA     TONEIDX
+8112  3C                        INR     A
+8113  32 DA81                   STA     TONEIDX
+8116  FE 09                     CPI     9
+8118  DA 3C81                   JC      SWPUPD
+811B  3E 08                     MVI     A,8
+811D  32 DA81                   STA     TONEIDX
+8120  3E 01                     MVI     A,1
+8122  32 DD81                   STA     SWPDIR
+8125  C3 3C81                   JMP     SWPUPD
+
+8128                    SWPDN:  ; Sweeping down
+8128  3A DA81                   LDA     TONEIDX
+812B  3D                        DCR     A
+812C  32 DA81                   STA     TONEIDX
+812F  B7                        ORA     A
+8130  C2 3C81                   JNZ     SWPUPD
+8133  3E 01                     MVI     A,1
+8135  32 DA81                   STA     TONEIDX
+8138  AF                        XRA     A
+8139  32 DD81                   STA     SWPDIR
+
+                                ; Reload delay for new tone and continue
+813C  CD 4281           SWPUPD: CALL    LOADTONE
+813F  C3 CB80                   JMP     TONELP
+
+                        ; Sweep hold time (16-bit). Each half-cycle subtracts
+                        ; CURDELAY, so elapsed time is constant regardless of
+                        ; pitch.  ~30000 gives roughly 0.5 sec per tone step.
+      = 7530            SWPTIME EQU     30000
+
+                        ;------------------------------------------------------
+                        ; LOADTONE - Load CURDELAY from TONETBL[TONEIDX-1]
+                        ;------------------------------------------------------
+8142                    LOADTONE:
+8142  3A DA81                   LDA     TONEIDX
+8145  3D                        DCR     A
+8146  5F                        MOV     E,A
+8147  16 00                     MVI     D,0
+8149  21 D281                   LXI     H,TONETBL
+814C  19                        DAD     D
+814D  7E                        MOV     A,M
+814E  32 E081                   STA     CURDELAY
+8151  C9                        RET
+
+                        ;------------------------------------------------------
+                        ; Silence mode - idle loop (no tone)
+                        ;------------------------------------------------------
+8152                    DOSILENCE:
+                                ; Cassette output low
+8152  AF                        XRA     A
+8153  32 DB81                   STA     CASSOUT
+8156  D3 44                     OUT     CASSETTE
+
+                                ; Small idle delay so we don't spin too fast
+8158  06 00                     MVI     B,0
+815A  05                SILL:   DCR     B
+815B  C2 5A81                   JNZ     SILL
+
+815E  C3 7580                   JMP     MAINLP
+
+                        ;------------------------------------------------------
+                        ; SILENCE - user pressed space
+                        ;------------------------------------------------------
+8161                    SILENCE:
+8161  AF                        XRA     A
+8162  32 DA81                   STA     TONEIDX
+8165  32 DC81                   STA     SWEEP
+8168  32 DB81                   STA     CASSOUT
+816B  D3 44                     OUT     CASSETTE
+
+816D  CD AF0B                   CALL    PRINTI
+8170  4F66660D 0A00             DB      'Off',0DH,0AH,0
+8176  C3 7580                   JMP     MAINLP
+
+                        ;------------------------------------------------------
+                        ; SETSWEEP - toggle sweep mode
+                        ;------------------------------------------------------
+8179                    SETSWEEP:
+8179  3A DC81                   LDA     SWEEP
+817C  EE 01                     XRI     01H
+817E  32 DC81                   STA     SWEEP
+
+8181  B7                        ORA     A
+8182  CA A581                   JZ      SWPOFF
+
+                                ; Sweep on - init
+8185  3E 01                     MVI     A,1
+8187  32 DA81                   STA     TONEIDX
+818A  AF                        XRA     A
+818B  32 DD81                   STA     SWPDIR
+818E  21 3075                   LXI     H,SWPTIME
+8191  22 DE81                   SHLD    SWPTMR
+
+8194  CD AF0B                   CALL    PRINTI
+8197  53776565 70204F4E         DB      'Sweep ON',0DH,0AH,0
+819F  0D0A00
+81A2  C3 7580                   JMP     MAINLP
+
+81A5                    SWPOFF:
+81A5  CD AF0B                   CALL    PRINTI
+81A8  53776565 70204F46         DB      'Sweep OFF',0DH,0AH,0
+81B0  460D0A00
+81B4  C3 7580                   JMP     MAINLP
+
+                        ;------------------------------------------------------
+                        ; Exit: silence cassette, restore timer, return
+                        ;------------------------------------------------------
+81B7                    EXIT:
+                                ; Cassette off
+81B7  AF                        XRA     A
+81B8  D3 44                     OUT     CASSETTE
+
+                                ; Restore timer
+81BA  3A E181                   LDA     SAVTMR
+81BD  32 45FF                   STA     TIMERV
+81C0  D3 46                     OUT     TIMER
+
+81C2  CD AF0B                   CALL    PRINTI
+81C5  0D0A446F 6E652E0D         DB      0DH,0AH,'Done.',0DH,0AH,0
+81CD  0A00
+
+81CF  C3 5B01                   JMP     MAIN_MENU
+
+                        ;------------------------------------------------------
+                        ; PUTCH - Print character in A via ROM routine
+                        ;------------------------------------------------------
+      = 0BF6            PUTCH   EQU     0BF6H           ; ROM PUT_CHAR
+
+                        ;------------------------------------------------------
+                        ; Tone half-period table (flat delay loop count)
+                        ; Each iteration ~ 15 cycles.  Approx frequencies
+                        ; assume ~2 MHz clock + toggle overhead (~50 cyc).
+                        ;------------------------------------------------------
+81D2                    TONETBL:
+81D2  FA                        DB      250             ; tone 1 - ~200 Hz
+81D3  C8                        DB      200             ; tone 2 - ~260 Hz
+81D4  96                        DB      150             ; tone 3 - ~350 Hz
+81D5  6E                        DB      110             ; tone 4 - ~490 Hz
+81D6  50                        DB      80              ; tone 5 - ~690 Hz
+81D7  37                        DB      55              ; tone 6 - ~1050 Hz
+81D8  23                        DB      35              ; tone 7 - ~1700 Hz
+81D9  14                        DB      20              ; tone 8 - ~3000 Hz
+
+                        ;------------------------------------------------------
+                        ; Data
+                        ;------------------------------------------------------
+81DA  04                TONEIDX:    DB  04H            ; current tone (1-8, 0=off)
+81DB  00                CASSOUT:    DB  00H            ; current cassette output state
+81DC  00                SWEEP:      DB  00H            ; sweep mode flag
+81DD  00                SWPDIR:     DB  00H            ; sweep direction (0=up, 1=down)
+81DE  3075              SWPTMR:     DW  30000          ; 16-bit sweep countdown timer
+81E0  00                CURDELAY:   DB  00H            ; current tone delay
+81E1  00                SAVTMR:     DB  00H            ; saved timer state
+
+81E2   (8000)                   END     START
+
+CASSETTE           0044 E  CASSOUT            81DB    CURDELAY           81E0
+DOSILENCE          8152    DOTONE             80C1    EXIT               81B7
+GETCHAR            0BDE E  HDLY               80D9    LOADTONE           8142
+MAINLP             8075    MAIN_MENU          015B E  NOKEY              80C1
+OUTPORT            00C0 E  PRINTI             0BAF E  PUTCH              0BF6 E
+RXBHEAD            FF2E E  RXBTAIL            FF30 E  SAVTMR             81E1
+SETSWEEP           8179    SILENCE            8161    SILL               815A
+START              8000    SWEEP              81DC    SWPDIR             81DD
+SWPDN              8128    SWPOFF             81A5    SWPTIME            7530 E
+SWPTMR             81DE    SWPUPD             813C    TIMER              0046 E
+TIMERV             FF45 E  TONEIDX            81DA    TONELP             80CB
+TONETBL            81D2

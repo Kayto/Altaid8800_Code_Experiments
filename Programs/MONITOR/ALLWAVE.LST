@@ -1,0 +1,260 @@
+                                ;=====================================================
+                        ; ALLWAVE.ASM - Full Panel LED Wave Demo
+                        ;
+                        ; Monitor program for the Altaid 8800.
+                        ; Load via ':' command, run with 'G 8000'.
+                        ;
+                        ; Sweeps a wave across ALL front panel LEDs:
+                        ;   Address (16), Data (8), Status (4) = 28 LEDs.
+                        ;   Fills right-to-left, then drains right-to-left,
+                        ;   repeating continuously.
+                        ;
+                        ; Wave order (right-to-left on the panel):
+                        ;   A0-A3 (col 2), A4-A7 (col 3), A8-A11 (col 0),
+                        ;   A12-A15 (col 1), Status (col 6), D0-D3 (col 4),
+                        ;   D4-D7 (col 5)
+                        ;
+                        ; 56 animation steps: 28 fill + 28 drain.
+                        ; Each step fills or drains one bit in one column.
+                        ;
+                        ; Press ESC to exit.
+                        ;=====================================================
+
+8000                            ORG     8000H
+
+                        ;------------------------------------------------------
+                        ; System equates
+                        ;------------------------------------------------------
+      = 00C0            OUTPORT EQU     0C0H            ; LED + TX output port
+      = 0046            TIMER   EQU     046H            ; Timer control port
+      = FF45            TIMERV  EQU     0FF45H          ; TIMER_RUN variable
+      = FF2E            RXBHEAD EQU     0FF2EH          ; UART RX buffer head
+      = FF30            RXBTAIL EQU     0FF30H          ; UART RX buffer tail
+      = 0BAF            PRINTI  EQU     0BAFH           ; ROM print inline string
+      = 015B            MAINMNU EQU     015BH           ; ROM monitor menu
+      = 0BDE            GETCHAR EQU     0BDEH           ; ROM blocking char read
+
+      = 0007            NUMCOLS EQU     7               ; 7 LED columns total
+      = 0038            TOTSTEP EQU     38H             ; 56 steps (28 fill + 28 drain)
+      = 001C            HALFSTP EQU     1CH             ; 28 = fill/drain boundary
+
+                        ;======================================================
+8000                    START:
+                                ; --- Save & stop timer ---
+8000  3A 45FF                   LDA     TIMERV
+8003  32 0381                   STA     SAVTMR
+8006  AF                        XRA     A
+8007  32 45FF                   STA     TIMERV
+800A  D3 46                     OUT     TIMER
+
+                                ; --- Banner ---
+800C  CD AF0B                   CALL    PRINTI
+800F  0D0A                      DB      0DH, 0AH
+8011  414C4C57 41564520         DB      'ALLWAVE - Full Panel Wave'
+8019  2D204675 6C6C2050
+8021  616E656C 20576176
+8029  65
+802A  0D0A                      DB      0DH, 0AH
+802C  4553433D 65786974         DB      'ESC=exit'
+8034  0D0A00                    DB      0DH, 0AH, 00H
+
+                                ; --- Clear all column data ---
+8037  21 0581                   LXI     H, COLDATA
+803A  06 07                     MVI     B, NUMCOLS
+803C  36 00             CLRLP:  MVI     M, 00H
+803E  23                        INX     H
+803F  05                        DCR     B
+8040  C2 3C80                   JNZ     CLRLP
+
+                                ; --- Init step counter ---
+8043  AF                        XRA     A
+8044  32 0481                   STA     STEP
+
+                        ;======================================================
+                        ; MAIN LOOP
+                        ;======================================================
+8047                    MAINLP:
+8047  3A 0481                   LDA     STEP
+
+                                ; Wrap at 56
+804A  FE 38                     CPI     TOTSTEP
+804C  DA 5380                   JC      NOWRAP
+804F  AF                        XRA     A
+8050  32 0481                   STA     STEP
+
+8053                    NOWRAP:
+                                ; Fill or drain?
+8053  FE 1C                     CPI     HALFSTP
+8055  D2 8180                   JNC     DRAIN
+
+                                ;--- FILL phase (steps 0-27) ---
+                                ; col_group = step / 4
+8058  47                        MOV     B, A            ; B = step
+8059  0F                        RRC
+805A  0F                        RRC
+805B  E6 07                     ANI     07H             ; col_group
+805D  21 0C81                   LXI     H, COLORDER
+8060  85                        ADD     L
+8061  6F                        MOV     L, A
+8062  5E                        MOV     E, M            ; E = physical column index
+
+                                ; sub_step = step & 3
+8063  78                        MOV     A, B
+8064  E6 03                     ANI     03H
+8066  4F                        MOV     C, A            ; save sub_step
+8067  7B                        MOV     A, E
+8068  FE 06                     CPI     06H             ; status column?
+806A  79                        MOV     A, C
+806B  C2 7080                   JNZ     NORMFIL
+806E  C6 04                     ADI     04H             ; offset to RFILTBL
+8070                    NORMFIL:
+8070  21 1381                   LXI     H, FILLTBL
+8073  85                        ADD     L
+8074  6F                        MOV     L, A
+8075  7E                        MOV     A, M            ; A = fill pattern
+
+                                ; COLDATA[E] = fill pattern
+8076  21 0581                   LXI     H, COLDATA
+8079  57                        MOV     D, A
+807A  7B                        MOV     A, E
+807B  85                        ADD     L
+807C  6F                        MOV     L, A
+807D  72                        MOV     M, D
+807E  C3 AB80                   JMP     DOSCAN
+
+                                ;--- DRAIN phase (steps 28-55) ---
+8081                    DRAIN:
+8081  D6 1C                     SUI     HALFSTP         ; A = drain index (0-27)
+8083  47                        MOV     B, A
+8084  0F                        RRC
+8085  0F                        RRC
+8086  E6 07                     ANI     07H             ; col_group
+8088  21 0C81                   LXI     H, COLORDER
+808B  85                        ADD     L
+808C  6F                        MOV     L, A
+808D  5E                        MOV     E, M            ; E = physical column index
+
+808E  78                        MOV     A, B
+808F  E6 03                     ANI     03H
+8091  4F                        MOV     C, A
+8092  7B                        MOV     A, E
+8093  FE 06                     CPI     06H             ; status column?
+8095  79                        MOV     A, C
+8096  C2 9B80                   JNZ     NORMDRN
+8099  C6 04                     ADI     04H             ; offset to RFILTBL
+809B                    NORMDRN:
+809B  21 1381                   LXI     H, FILLTBL
+809E  85                        ADD     L
+809F  6F                        MOV     L, A
+80A0  7E                        MOV     A, M
+80A1  EE 0F                     XRI     0FH             ; invert for drain
+
+                                ; COLDATA[E] = drain pattern
+80A3  21 0581                   LXI     H, COLDATA
+80A6  57                        MOV     D, A
+80A7  7B                        MOV     A, E
+80A8  85                        ADD     L
+80A9  6F                        MOV     L, A
+80AA  72                        MOV     M, D
+
+                        ;======================================================
+                        ; SCAN - multiplex all 7 columns for POV
+                        ;======================================================
+80AB                    DOSCAN:
+80AB  16 14                     MVI     D, 14H          ; 20 scan cycles per step
+
+80AD                    SCANLP:
+80AD  21 0581                   LXI     H, COLDATA
+80B0  1E 80                     MVI     E, 80H          ; column 0 prefix
+80B2  06 07                     MVI     B, NUMCOLS
+
+80B4                    SCNCOL:
+80B4  7E                        MOV     A, M            ; column data (bits 3:0)
+80B5  B3                        ORA     E               ; merge prefix + TX idle
+80B6  D3 C0                     OUT     OUTPORT
+
+80B8  0E 80                     MVI     C, 80H          ; 128-iteration delay
+80BA  0D                COLDLY: DCR     C
+80BB  C2 BA80                   JNZ     COLDLY
+
+80BE  23                        INX     H               ; next column byte
+80BF  7B                        MOV     A, E
+80C0  C6 10                     ADI     10H             ; next column prefix
+80C2  5F                        MOV     E, A
+
+80C3  05                        DCR     B
+80C4  C2 B480                   JNZ     SCNCOL
+
+80C7  15                        DCR     D
+80C8  C2 AD80                   JNZ     SCANLP
+
+                                ; --- Advance step ---
+80CB  3A 0481                   LDA     STEP
+80CE  3C                        INR     A
+80CF  32 0481                   STA     STEP
+
+                                ; --- Check UART for keypress ---
+80D2  3A 2EFF                   LDA     RXBHEAD
+80D5  21 30FF                   LXI     H, RXBTAIL
+80D8  96                        SUB     M
+80D9  CA 4780                   JZ      MAINLP
+
+                                ; Read key - only ESC exits
+80DC  CD DE0B                   CALL    GETCHAR
+80DF  FE 1B                     CPI     1BH
+80E1  C2 4780                   JNZ     MAINLP
+
+                                ;=== EXIT ===
+
+                                ; Blank all LED columns
+80E4  3E 80                     MVI     A, 80H
+80E6  D3 C0             BLNKLP: OUT     OUTPORT
+80E8  C6 10                     ADI     10H
+80EA  D2 E680                   JNC     BLNKLP
+
+                                ; Restore timer
+80ED  3A 0381                   LDA     SAVTMR
+80F0  32 45FF                   STA     TIMERV
+80F3  D3 46                     OUT     TIMER
+
+80F5  CD AF0B                   CALL    PRINTI
+80F8  446F6E65 2E0D0A00         DB      'Done.', 0DH, 0AH, 00H
+
+8100  C3 5B01                   JMP     MAINMNU
+
+                        ;------------------------------------------------------
+                        ; Data
+                        ;------------------------------------------------------
+8103  00                SAVTMR: DB      00H
+8104  00                STEP:   DB      00H
+
+                        ; Column data bytes (indexed 0-6 = columns 0-6)
+8105                    COLDATA:
+8105  00000000 000000           DB      00H, 00H, 00H, 00H, 00H, 00H, 00H
+
+                        ; Wave sweep order: right-to-left across the panel
+                        ; Physical layout: Address - Status - Data
+                        ;   A0-A3 (col 2), A4-A7 (col 3), A8-A11 (col 0),
+                        ;   A12-A15 (col 1), Status (col 6), D0-D3 (col 4),
+                        ;   D4-D7 (col 5)
+810C                    COLORDER:
+810C  02030001 060405           DB      02H, 03H, 00H, 01H, 06H, 04H, 05H
+
+                        ; Fill patterns for 4 bits within a column
+                        ; Address/Data: right-to-left (bit 0 up)
+                        ; Status:       left-to-right (bit 3 down)
+8113                    FILLTBL:
+8113  0103070F                  DB      01H, 03H, 07H, 0FH
+8117                    RFILTBL:
+8117  080C0E0F                  DB      08H, 0CH, 0EH, 0FH
+
+BLNKLP             80E6    CLRLP              803C    COLDATA            8105
+COLDLY             80BA    COLORDER           810C    DOSCAN             80AB
+DRAIN              8081    FILLTBL            8113    GETCHAR            0BDE E
+HALFSTP            001C E  MAINLP             8047    MAINMNU            015B E
+NORMDRN            809B    NORMFIL            8070    NOWRAP             8053
+NUMCOLS            0007 E  OUTPORT            00C0 E  PRINTI             0BAF E
+RFILTBL            8117    RXBHEAD            FF2E E  RXBTAIL            FF30 E
+SAVTMR             8103    SCANLP             80AD    SCNCOL             80B4
+START              8000    STEP               8104    TIMER              0046 E
+TIMERV             FF45 E  TOTSTEP            0038 E
