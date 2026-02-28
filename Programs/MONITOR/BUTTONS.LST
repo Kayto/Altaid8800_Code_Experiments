@@ -1,8 +1,10 @@
-                        ;=====================================================
+                        ; ====================================================
                         ; BUTTONS.ASM - Front Panel Button Test
-                        ;
-                        ; Monitor program for the Altaid 8800.
-                        ; Load via the : (Intel HEX) command, run with G 8000.
+                        ; Author: kayto
+                        ; Version date: 28/02/2026
+                        ; Licensed under the MIT License. See LICENSE file in the project root for full license text.
+                        ; ====================================================
+                        ; Assembler syntax: asmx -C 8080 -e -w -o BUTTONS.hex BUTTONS.ASM
                         ;
                         ; Tests all 11 software-readable buttons:
                         ;   D0-D7  = 8 Data Momentary Switches
@@ -31,8 +33,7 @@
                         ;
                         ; Timer ISR must be stopped to prevent C0H conflicts.
                         ;
-                        ; Assemble: asmx -C 8080 -e -w -o BUTTONS.hex BUTTONS.ASM
-                        ;=====================================================
+                        ; ====================================================
 
 8000                            ORG     8000H
 

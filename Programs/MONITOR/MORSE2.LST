@@ -1,30 +1,33 @@
-                        ; =============================================================
+
+                        ; ====================================================
                         ; MORSE2.ASM - Compact Morse Code Tape Reader
-                        ; =============================================================
-                        ; Monitor program for Altaid 8800 -- load at 8000H via ':'
+                        ; Author: kayto
+                        ; Version date: 28/02/2026
+                        ; Licensed under the MIT License. See LICENSE file in the project root for full license text.
+                        ; ====================================================
+                        ; Assembler syntax: asmx -C 8080 -e -w -o MORSE2.hex MORSE2.ASM
                         ;
-                        ; Like MORSE but more compact: dots are 1 LED wide, dashes
-                        ; are 2 LEDs wide (instead of standard 1:3 ratio).  This makes
-                        ; the scrolling display denser so more of the message is visible
-                        ; at once across the 28 LEDs.  MORSE.ASM uses the standard 3-LED
-                        ; dash for strict Morse compliance; MORSE2 and MORSE3 trade that
-                        ; for readability on a small display.
+                        ; Type characters on the serial terminal and watch the Morse
+                        ; code scroll across all 28 LEDs like a paper tape reader.
                         ;
-                        ;   Dot   = 1 LED on
-                        ;   Dash  = 2 LEDs on (adjacent)
-                        ;   Gap between elements = 1 LED off
-                        ;   Gap between letters  = 3 LEDs off
-                        ;   Gap between words    = 7 LEDs off
-                        ;
-                        ; Example SOS:  *-*-*---**-**-**---*-*-*
-                        ;   * = lit LED  - = off LED
-                        ;
-                        ; Single 28-bit shift register scrolls across all LEDs:
-                        ;   Top row:    Address A15..A0  (16 LEDs)
+                        ; The two LED rows form a continuous 28-bit scrolling strip:
+                        ;   Top row:    Address LEDs A15..A0  (16 LEDs)
                         ;   Bottom row: Data D7..D0 + Status S3..S0  (12 LEDs)
                         ;
+                        ; New dots and dashes enter at the bottom right (status LEDs)
+                        ; and scroll left through data, then across the address row.
+                        ;
+                        ;   Dot   = 1 unit on
+                        ;   Dash  = 2 units on (adjacent)
+                        ;   Gap between elements = 1 unit off
+                        ;   Gap between letters  = 3 units off
+                        ;   Gap between words    = 7 units off
+                        ;
+                        ; LED display: compact Morse timing (1:2 dot-to-dash ratio).
+                        ; MORSE.ASM uses the standard 1:3 ratio for strict Morse compliance.
+                        ;
                         ; Supports A-Z, 0-9 and space.  Press ESC to exit.
-                        ; =============================================================
+                        ; ====================================================
 
 8000                            ORG     8000H
 

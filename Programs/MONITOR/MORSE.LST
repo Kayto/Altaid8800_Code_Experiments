@@ -1,7 +1,11 @@
-                        ; =============================================================
+
+                        ; ====================================================
                         ; MORSE.ASM - Morse Code Tape Reader
-                        ; =============================================================
-                        ; Monitor program for Altaid 8800 -- load at 8000H via ':'
+                        ; Author: kayto
+                        ; Version date: 28/02/2026
+                        ; Licensed under the MIT License. See LICENSE file in the project root for full license text.
+                        ; ====================================================
+                        ; Assembler syntax: asmx -C 8080 -e -w -o MORSE.hex MORSE.ASM
                         ;
                         ; Type characters on the serial terminal and watch the Morse
                         ; code scroll across all 28 LEDs like a paper tape reader.
@@ -23,7 +27,7 @@
                         ; MORSE2/MORSE3 use a compact 2-LED dash for a denser display.
                         ;
                         ; Supports A-Z, 0-9 and space.  Press ESC to exit.
-                        ; =============================================================
+                        ; ====================================================
 
 8000                            ORG     8000H
 

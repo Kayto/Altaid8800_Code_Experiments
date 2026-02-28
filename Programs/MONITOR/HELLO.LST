@@ -1,5 +1,8 @@
                         ;=====================================================
                         ; HELLO.ASM - Hello from HEX! test program
+                        ; Author: kayto
+                        ; Version date: 28/02/2026
+                        ; Licensed under the MIT License. See LICENSE file in the project root for full license text.
                         ;
                         ; Monitor program for the Altaid 8800.
                         ; Load via the : (Intel HEX) command, run with G 8000.

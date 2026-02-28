@@ -1,38 +1,35 @@
-                        ; =============================================================
+
+                        ; ====================================================
                         ; MORSE3.ASM - Morse Code Tape Reader with Audio Tones
-                        ; =============================================================
-                        ; Monitor program for Altaid 8800 -- load at 8000H via ':'
-                        ;
-                        ; Based on MORSE.ASM but adds audible dot/dash tones through
-                        ; the cassette output port (44H).  Connect a small speaker or
-                        ; piezo buzzer to the cassette output.
-                        ;
-                        ; Uses a compact 2-LED dash display (same as MORSE2) instead of
-                        ; the standard 3-LED dash.  This keeps more of the message
-                        ; visible on the 28-LED strip.  Audio timing remains correct:
-                        ; dash tone plays for the full 3 units even though only 2 LEDs
-                        ; are lit.  See MORSE.ASM for the standard-width LED display.
+                        ; Author: kayto
+                        ; Version date: 28/02/2026
+                        ; Licensed under the MIT License. See LICENSE file in the project root for full license text.
+                        ; ====================================================
+                        ; Assembler syntax: asmx -C 8080 -e -w -o MORSE3.hex MORSE3.ASM
                         ;
                         ; Type characters on the serial terminal and watch Morse code
                         ; scroll across all 28 LEDs while hearing the corresponding
                         ; dits and dahs.  The tone plays during on-elements (dots and
                         ; dashes) and is silent during gaps.
                         ;
-                        ; LED layout (same as MORSE.ASM):
+                        ; The two LED rows form a continuous 28-bit scrolling strip:
                         ;   Top row:    Address LEDs A15..A0  (16 LEDs)
                         ;   Bottom row: Data D7..D0 + Status S3..S0  (12 LEDs)
                         ;
-                        ; Morse timing:
+                        ; New dots and dashes enter at the bottom right (status LEDs)
+                        ; and scroll left through data, then across the address row.
+                        ;
                         ;   Dot   = 1 unit on  (tone plays, 1 LED lit)
-                        ;   Dash  = 3 units on (tone plays, 2 LEDs lit + 1 dark)
+                        ;   Dash  = 2 units on (tone plays, 2 LEDs lit)
                         ;   Gap between elements = 1 unit off (silent)
                         ;   Gap between letters  = 3 units off (silent)
                         ;   Gap between words    = 7 units off (silent)
                         ;
-                        ; Supports A-Z, 0-9 and space.  Press ESC to exit.
+                        ; LED display: compact Morse timing (1:2 dot-to-dash ratio).
+                        ; MORSE.ASM uses the standard 1:3 ratio for strict Morse compliance.
                         ;
-                        ; Assemble: asmx -C 8080 -e -w -o MORSE3.hex MORSE3.ASM
-                        ; =============================================================
+                        ; Supports A-Z, 0-9 and space.  Press ESC to exit.
+                        ; ====================================================
 
 8000                            ORG     8000H
 

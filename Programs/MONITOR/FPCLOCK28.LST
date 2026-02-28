@@ -1,5 +1,10 @@
-                                ;=====================================================
+                        ; ====================================================
                         ; FPCLOCK28.ASM - 28-LED Tally Clock
+                        ; Author: kayto
+                        ; Version date: 28/02/2026
+                        ; Licensed under the MIT License. See LICENSE file in the project root for full license text.
+                        ; ====================================================
+                        ; Assembler syntax: asmx -C 8080 -e -w -o FPCLOCK28.hex FPCLOCK28.ASM
                         ;
                         ; Monitor program for the Altaid 8800.
                         ; Load via ':' command, run with 'G 8000'.
@@ -41,7 +46,7 @@
                         ;
                         ; Screens alternate every ~3 sec with brief flash.
                         ; Press ESC to exit.
-                        ;=====================================================
+                        ; ====================================================
 
 8000                            ORG     8000H
 

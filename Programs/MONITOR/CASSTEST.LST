@@ -1,5 +1,10 @@
-                        ;=====================================================
+                        ; ====================================================
                         ; CASSTEST.ASM - Cassette Port Test
+                        ; Author: kayto
+                        ; Version date: 28/02/2026
+                        ; Licensed under the MIT License. See LICENSE file in the project root for full license text.
+                        ; ====================================================
+                        ; Assembler syntax: asmx -C 8080 -e -w -o CASSTEST.hex CASSTEST.ASM
                         ;
                         ; Monitor program for the Altaid 8800.
                         ; Load via the : (Intel HEX) command, run with G 8000.
@@ -26,7 +31,7 @@
                         ; UART RX buffer is checked directly for commands.
                         ;
                         ; Assemble: asmx -C 8080 -e -w -o CASSTEST.hex CASSTEST.ASM
-                        ;=====================================================
+                        ; ====================================================
 
 8000                            ORG     8000H
 

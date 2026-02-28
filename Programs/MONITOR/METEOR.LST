@@ -1,5 +1,10 @@
-                                ;=====================================================
+                        ; ========================
                         ; METEOR.ASM - Twin Shooting Stars
+                        ; Author: kayto
+                        ; Version date: 28/02/2026
+                        ; Licensed under the MIT License. See LICENSE file in the project root for full license text.
+                        ; ========================
+                        ; Assembler syntax: asmx -C 8080 -e -w -o METEOR.hex METEOR.ASM
                         ;
                         ; Monitor program for the Altaid 8800.
                         ; Load via ':' command, run with 'G 8000'.

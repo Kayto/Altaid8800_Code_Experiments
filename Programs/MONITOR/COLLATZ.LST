@@ -1,7 +1,13 @@
-                        ; =============================================================
+                        ; ====================================================
                         ; COLLATZ.ASM - Collatz Conjecture Explorer
-                        ; =============================================================
-                        ; Monitor program for Altaid 8800 -- load at 8000H via ':'
+                        ; Author: kayto
+                        ; Version date: 28/02/2026
+                        ; Licensed under the MIT License. See LICENSE file in the project root for full license text.
+                        ; ====================================================
+                        ; Assembler syntax: asmx -C 8080 -e -w -o COLLATZ.hex COLLATZ.ASM
+                        ;
+                        ; Monitor program for the Altaid 8800.
+                        ; Load via ':' command, run with 'G 8000'.
                         ;
                         ; The Collatz conjecture (the 3N+1 problem):
                         ;   Given any positive integer N,
@@ -34,7 +40,7 @@
                         ; B=50/50 — flash on/off duration
                         ; B=100 — final state hold before advancing
                         ;
-                        ; =============================================================
+                        ; ====================================================
 
 8000                            ORG     8000H
 
